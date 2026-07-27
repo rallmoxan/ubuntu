@@ -1,0 +1,244 @@
+#!/usr/bin/env bash
+#
+# Pre-reboot audit. RUN INSIDE THE CHROOT, after Phase 8.
+#   bash /root/install/verify-before-reboot.sh
+#
+# Every check here maps to a specific way a debootstrap install fails to boot.
+# Do not reboot while anything says FAIL.
+#
+# Runs to completion and reports everything; it does not stop at the first
+# problem, because you want the whole list, not one item at a time.
+
+PASS=0; FAIL=0; WARN=0
+
+ok()   { printf '  \033[32mPASS\033[0m  %s\n' "$1"; PASS=$((PASS+1)); }
+bad()  { printf '  \033[31mFAIL\033[0m  %s\n' "$1"; FAIL=$((FAIL+1)); }
+warn() { printf '  \033[33mWARN\033[0m  %s\n' "$1"; WARN=$((WARN+1)); }
+sect() { printf '\n\033[1m== %s\033[0m\n' "$1"; }
+
+# ---------------------------------------------------------------------------
+sect "1. /etc/fstab  (the read-only-root killer)"
+
+if [ ! -s /etc/fstab ]; then
+  bad "/etc/fstab is missing or empty - the system WILL boot read-only"
+else
+  ROOT_LINE="$(awk '$2=="/" && $1 !~ /^#/ {print; exit}' /etc/fstab)"
+  if [ -z "$ROOT_LINE" ]; then
+    bad "no entry for / in fstab - systemd cannot remount root rw, you get a READ-ONLY system"
+  else
+    ok "root entry present: $ROOT_LINE"
+
+    case "$ROOT_LINE" in
+      *,ro,*|*\ ro,*|*,ro\ *) bad "root is mounted 'ro' in fstab - remove it" ;;
+      *rw*)                   ok  "root options contain 'rw'" ;;
+      *)                      warn "root has no explicit 'rw' (usually still fine, rw is the default)" ;;
+    esac
+
+    case "$ROOT_LINE" in
+      *subvol=@*) ok "root has subvol=@" ;;
+      *)          bad "root line has no subvol=@ - the wrong btrfs subvolume will be mounted" ;;
+    esac
+
+    ROOT_PASS="$(echo "$ROOT_LINE" | awk '{print $6}')"
+    if [ "$ROOT_PASS" = "0" ]; then ok "root fsck pass is 0 (correct for btrfs)"
+    else bad "root fsck pass is '$ROOT_PASS' - must be 0 for btrfs or boot drops to emergency mode"; fi
+  fi
+
+  # Every UUID in fstab must actually resolve.
+  #
+  # Deliberately a `for` over command substitution, not `while read ... < <(...)`:
+  # process substitution needs /dev/fd, and in a chroot where /dev is not fully
+  # populated bash fails with "/dev/fd/63: No such file or directory" and the
+  # whole loop is SKIPPED SILENTLY - the checks below still print PASS and you
+  # would never learn that the most important check never ran. Caught by
+  # actually executing this script in a minimal chroot.
+  # awk instead of `grep -oP` for the same reason: no PCRE dependency.
+  UUIDS="$(awk '$1 ~ /^UUID=/ && $1 !~ /^#/ {sub(/^UUID=/,"",$1); print $1}' /etc/fstab | sort -u)"
+  if [ -z "$UUIDS" ]; then
+    bad "no UUID= entries in fstab at all - device names are fragile, boot may fail"
+  else
+    for uuid in $UUIDS; do
+      if blkid -U "$uuid" >/dev/null 2>&1; then
+        ok "UUID=$uuid resolves to $(blkid -U "$uuid")"
+      else
+        bad "UUID=$uuid in fstab does not exist - boot will hang waiting for it"
+      fi
+    done
+  fi
+
+  grep -qE '^\S+\s+/boot/efi\s+vfat' /etc/fstab \
+    && ok "/boot/efi entry present" \
+    || bad "/boot/efi missing from fstab - kernel updates will not reach the ESP"
+fi
+
+# ---------------------------------------------------------------------------
+sect "2. Kernel and initramfs"
+
+if [ -x /sbin/init ] || [ -L /sbin/init ]; then
+  ok "/sbin/init present -> $(readlink -f /sbin/init 2>/dev/null || echo /sbin/init)"
+else
+  bad "/sbin/init missing - the kernel will panic. Install: apt-get install systemd-sysv"
+fi
+
+if ls /boot/vmlinuz-* >/dev/null 2>&1; then
+  ok "kernel: $(ls -1 /boot/vmlinuz-* | xargs -n1 basename | tr '\n' ' ')"
+else
+  bad "no kernel in /boot - nothing to boot"
+fi
+
+if ls /boot/initrd.img-* >/dev/null 2>&1; then
+  for img in /boot/initrd.img-*; do
+    if lsinitramfs "$img" 2>/dev/null | grep -q btrfs; then
+      ok "$(basename "$img") has btrfs support"
+    else
+      bad "$(basename "$img") has NO btrfs support - kernel panic on boot"
+    fi
+  done
+else
+  bad "no initramfs in /boot"
+fi
+
+# ---------------------------------------------------------------------------
+sect "3. GRUB and the ESP"
+
+if [ -s /boot/grub/grub.cfg ]; then
+  ok "grub.cfg exists"
+  RU="$(awk '$2=="/" && $1 ~ /^UUID=/ {print $1}' /etc/fstab | sed 's/^UUID=//')"
+  [ -n "$RU" ] && grep -q "$RU" /boot/grub/grub.cfg \
+    && ok "grub.cfg references the root UUID" \
+    || bad "grub.cfg does not reference the root UUID from fstab"
+  grep -q 'rootflags=subvol=@' /boot/grub/grub.cfg \
+    && ok "grub.cfg passes rootflags=subvol=@" \
+    || bad "grub.cfg lacks rootflags=subvol=@ - initramfs will mount the wrong subvolume"
+  grep -qE 'linux\s+/@?/?boot/vmlinuz' /boot/grub/grub.cfg \
+    && ok "grub.cfg has a kernel entry" \
+    || warn "could not spot a kernel line in grub.cfg - inspect it by hand"
+else
+  bad "/boot/grub/grub.cfg missing - run update-grub"
+fi
+
+if mountpoint -q /boot/efi; then
+  ok "/boot/efi is mounted"
+  [ -f /boot/efi/EFI/Ubuntu/shimx64.efi ] || [ -f /boot/efi/EFI/ubuntu/shimx64.efi ] \
+    && ok "shimx64.efi present (Secure Boot path)" \
+    || warn "no shimx64.efi - fine only if Secure Boot is off"
+  [ -f /boot/efi/EFI/Ubuntu/grubx64.efi ] || [ -f /boot/efi/EFI/ubuntu/grubx64.efi ] \
+    && ok "grubx64.efi present" \
+    || bad "no grubx64.efi in the ESP"
+  [ -f /boot/efi/EFI/BOOT/BOOTX64.EFI ] || [ -f /boot/efi/EFI/boot/bootx64.efi ] \
+    && ok "removable fallback BOOTX64.EFI present" \
+    || warn "no fallback BOOTX64.EFI - firmware that ignores NVRAM will not find Ubuntu"
+else
+  bad "/boot/efi is not mounted - GRUB cannot have been installed correctly"
+fi
+
+if command -v efibootmgr >/dev/null 2>&1; then
+  if efibootmgr 2>/dev/null | grep -qi ubuntu; then ok "UEFI NVRAM entry for Ubuntu exists"
+  else warn "no Ubuntu NVRAM entry (efivars may not be visible in the chroot; the fallback BOOTX64.EFI covers this)"; fi
+fi
+
+# ---------------------------------------------------------------------------
+sect "4. Identity, users, login"
+
+[ -s /etc/machine-id ] && ok "machine-id set" || bad "/etc/machine-id empty - systemd/dbus will misbehave"
+[ -s /etc/hostname ]   && ok "hostname: $(cat /etc/hostname)" || bad "/etc/hostname empty"
+grep -q "$(cat /etc/hostname 2>/dev/null)" /etc/hosts 2>/dev/null \
+  && ok "hostname resolves via /etc/hosts" \
+  || warn "hostname not in /etc/hosts - sudo and GNOME may stall on lookups"
+
+U="$(awk -F: '$3==1000 {print $1; exit}' /etc/passwd)"
+if [ -n "$U" ]; then
+  ok "user '$U' exists with uid 1000"
+  case "$(passwd -S "$U" 2>/dev/null | awk '{print $2}')" in
+    P)  ok "'$U' has a password set" ;;
+    L)  bad "'$U' is LOCKED - you will not be able to log in" ;;
+    NP) bad "'$U' has NO password - GDM will refuse the login" ;;
+    *)  warn "could not determine password state for '$U'" ;;
+  esac
+  id -nG "$U" | tr ' ' '\n' | grep -qx sudo \
+    && ok "'$U' is in the sudo group" \
+    || bad "'$U' is not in sudo - no administrative access on the new system"
+  [ -d "/home/$U" ] && ok "/home/$U exists" || bad "/home/$U missing"
+else
+  bad "no uid-1000 user - nothing to log in as"
+fi
+
+case "$(passwd -S root 2>/dev/null | awk '{print $2}')" in
+  P) ok "root password set" ;;
+  L) warn "root is locked (fine if sudo works, painful in a recovery shell)" ;;
+  *) warn "root password state unknown" ;;
+esac
+
+# ---------------------------------------------------------------------------
+sect "5. Boot target and services"
+
+DEF="$(systemctl get-default 2>/dev/null || echo unknown)"
+[ "$DEF" = "graphical.target" ] && ok "default target: graphical.target" \
+                                || bad "default target is '$DEF' - you will land in a text console"
+
+if systemctl is-enabled gdm3 >/dev/null 2>&1 || systemctl is-enabled gdm >/dev/null 2>&1; then
+  ok "display manager (gdm3/gdm) enabled"
+else
+  bad "gdm3 is NOT enabled - you will boot to a text console"
+fi
+for u in NetworkManager systemd-resolved; do
+  if systemctl is-enabled "$u" >/dev/null 2>&1; then ok "$u enabled"
+  else bad "$u is NOT enabled"; fi
+done
+
+[ -f /etc/X11/default-display-manager ] \
+  && ok "display manager: $(cat /etc/X11/default-display-manager)" \
+  || warn "/etc/X11/default-display-manager missing"
+
+# ---------------------------------------------------------------------------
+sect "6. No-snap policy"
+
+if dpkg-query -W -f='${Status}\n' snapd 2>/dev/null | grep -q '^install ok installed'; then
+  bad "snapd IS INSTALLED"
+else
+  ok "snapd not installed"
+fi
+[ -e /etc/apt/preferences.d/nosnap.pref ] && ok "nosnap.pref in place" || bad "nosnap.pref missing"
+[ "$(apt-cache policy snapd 2>/dev/null | awk '/Candidate:/{print $2}')" = "(none)" ] \
+  && ok "snapd candidate is (none) - pin effective" \
+  || bad "snapd is installable - the pin is not working"
+[ -d /snap ] && bad "/snap directory exists" || ok "/snap absent"
+
+if dpkg -s firefox >/dev/null 2>&1; then
+  FFV="$(dpkg-query -W -f='${Version}' firefox 2>/dev/null)"
+  case "$FFV" in
+    *snap*) bad "installed firefox is the snap shim ($FFV)" ;;
+    *)      ok "firefox is a real deb ($FFV)" ;;
+  esac
+else
+  warn "firefox not installed - install it from Mozilla's repo after first boot"
+fi
+
+# ---------------------------------------------------------------------------
+sect "7. Locale, time, swap, network"
+
+[ -e /etc/localtime ] && ok "timezone: $(cat /etc/timezone 2>/dev/null || readlink -f /etc/localtime)" \
+                      || bad "/etc/localtime missing"
+locale -a 2>/dev/null | grep -qi 'en_US.utf8' && ok "en_US.UTF-8 generated" \
+                                              || bad "en_US.UTF-8 not generated"
+[ -f /etc/systemd/zram-generator.conf ] && ok "zram configured" || warn "no zram config - system will run without swap"
+grep -qE '^\s*[^#]\S*\s+swap\s' /etc/fstab 2>/dev/null \
+  && warn "an on-disk swap entry exists in fstab (you chose zram-only)" \
+  || ok "no on-disk swap in fstab (as intended)"
+[ -L /etc/resolv.conf ] && ok "resolv.conf is a symlink -> $(readlink /etc/resolv.conf)" \
+                        || warn "resolv.conf is a regular file - DNS may be stale after first boot"
+
+[ -e /usr/sbin/policy-rc.d ] && bad "policy-rc.d still present - services will refuse to start on the real system" \
+                             || ok "policy-rc.d removed"
+
+# ---------------------------------------------------------------------------
+printf '\n\033[1m===============================================\033[0m\n'
+printf '  PASS %s   WARN %s   FAIL %s\n' "$PASS" "$WARN" "$FAIL"
+printf '\033[1m===============================================\033[0m\n'
+if [ "$FAIL" -gt 0 ]; then
+  printf '\n\033[31mDO NOT REBOOT.\033[0m Fix the FAIL lines above first.\n\n'
+  exit 1
+fi
+printf '\n\033[32mSafe to reboot.\033[0m Exit the chroot, then:\n'
+printf '    exit\n    sudo umount -R /mnt\n    sudo reboot\n\n'
+exit 0

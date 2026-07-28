@@ -63,8 +63,17 @@ differ under the live kernel. The scripts already do this.
 - **Identity:** hostname `barzbug`, user `baris` at uid 1000 — set in `phase4-core.sh`
 - **Release:** Ubuntu 26.04 LTS, codename `resolute`
 - **Snap:** forbidden — `nosnap.pref` pin at priority -1 before any desktop package.
+  Pinned by enumeration, not by intent: every package in the archive with a hard
+  snapd dependency, including ones this desktop would never install.
   Flatpak/Flathub is allowed and gets its own subvolume.
-- **Firefox:** native `.deb`, never the snap.
+- **Firefox:** native `.deb`, never the snap. Same for `thunderbird` and
+  `chromium-browser` — both are snap installers in Ubuntu's archive too.
+- **Rollback:** `apt-btrfs-snapshot`, installed at the end of Phase 8. Snapshots
+  `@` before every dpkg run, keeps them at the btrfs top level as
+  `@apt-snapshot-*`, prunes by name (8 hourly / 7 daily / 2 weekly).
+  Never set `APT::Snapshots::MaxAge` — atime-based, and this root is `noatime`.
+  `grub-btrfs` (boot-menu entries per snapshot) is out of scope: not packaged
+  for Ubuntu.
 - **Desktop:** GNOME + full Yaru, installed with `--no-install-recommends`.
 
 ## Phase 9 (the deferred wipe) — run `phase9-home-to-samsung.sh`

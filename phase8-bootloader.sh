@@ -113,6 +113,55 @@ ln -sf ../run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
 echo "==> Cleanup"
 rm -f /usr/sbin/policy-rc.d
 apt-get -y autoremove --purge
+
+# --------------------------------------------------- apt snapshot safety net
+# Phase 2b creates an @snapshots subvolume and Phase 3 mounts it at
+# /.snapshots, but nothing has ever written to it: the layout was
+# snapshot-ready with no snapshots in it. apt-btrfs-snapshot closes that gap.
+#
+# It ships /etc/apt/apt.conf.d/80-btrfs-snapshot, a DPkg::Pre-Invoke hook that
+# snapshots the @ subvolume before every dpkg run. A bad upgrade then costs one
+# `set-default` and a reboot instead of a reinstall.
+#
+# Installed HERE, after autoremove, on purpose. APT reads apt.conf.d once at
+# startup, so the hook that arrives during this run does not fire during it -
+# and every earlier phase finishes before the hook exists. Snapshotting a
+# chroot mid-build would be noise at best.
+echo "==> apt-btrfs-snapshot (pre-upgrade rollback point)"
+apt_install --no-install-recommends apt-btrfs-snapshot
+
+# Retention. Pruning runs automatically every time a snapshot is taken and
+# works off the TIMESTAMP IN THE SNAPSHOT NAME, which is what makes it safe
+# here - see the MaxAge warning below.
+#
+# The key is APT::Snapshot (singular). The comment block shipped inside
+# /etc/cron.weekly/apt-btrfs-snapshot documents it as APT::Snapshots::Retain
+# (plural); that spelling is not what the code reads and silently does nothing.
+cat > /etc/apt/apt.conf.d/81-btrfs-snapshot-retain <<'EOF'
+// Keep the last 8 hourly, 7 daily and 2 weekly apt snapshots of @.
+// Snapshots are CoW, so an idle one costs almost nothing until @ diverges.
+APT::Snapshot::Retain::hourly "8";
+APT::Snapshot::Retain::daily "7";
+APT::Snapshot::Retain::weekly "2";
+
+// Deliberately NOT set: APT::Snapshots::MaxAge.
+// It switches cleanup over to `delete-older-than`, which derives a snapshot's
+// age from the atime of its etc/fstab - and this root is mounted noatime, so
+// that path errors out. Setting it also disables the automatic prune above,
+// which would leave snapshots accumulating forever.
+EOF
+echo "    wrote /etc/apt/apt.conf.d/81-btrfs-snapshot-retain"
+
+# `supported` only reads /etc/fstab (btrfs root mounted with subvol=@); it does
+# not mount anything, so it is safe to run inside the chroot. Creating a
+# snapshot is not - that waits for the real system.
+if apt-btrfs-snapshot supported >/dev/null 2>&1; then
+  echo "    layout supported - snapshots will be taken from the first apt run"
+else
+  echo "    !! apt-btrfs-snapshot reports this layout as unsupported."
+  echo "    !! It needs a btrfs / mounted with subvol=@ in /etc/fstab."
+fi
+
 apt-get clean
 
 # ------------------------------------------------- make no-recommends permanent

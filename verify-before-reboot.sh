@@ -208,20 +208,109 @@ fi
 # it is written against the ORIGIN and not against one version string that the
 # next Ubuntu shim release would slip past.
 if grep -q 'Pin: release o=Ubuntu' /etc/apt/preferences.d/nosnap.pref 2>/dev/null; then
-  ok "firefox pinned by origin - survives shim version bumps"
+  ok "browser/mail pinned by origin - survives shim version bumps"
 else
-  warn "firefox pin is not origin-based; a shim version bump could slip past it"
+  warn "the firefox/thunderbird pin is not origin-based; a version bump could slip past it"
 fi
 
-if dpkg -s firefox >/dev/null 2>&1; then
-  FFV="$(dpkg-query -W -f='${Version}' firefox 2>/dev/null)"
-  case "$FFV" in
-    *snap*) bad "installed firefox is the snap shim ($FFV)" ;;
-    *)      ok "firefox is a real deb ($FFV)" ;;
-  esac
+# Everything here must be uninstallable outright. firefox and thunderbird are
+# NOT in this list: by now Mozilla's repo is configured and their candidate is
+# supposed to be a real deb, so they get their own check further down.
+#
+# One apt-cache call for the lot. A package missing from the archive simply
+# produces no stanza, which is the same PASS as a blocked one.
+BLOCKED="snapd snapd-seed-glue snapd-installation-monitor
+         gnome-software-plugin-snap plasma-discover-backend-snap fwupd-snap
+         ubuntu-server-minimal ubuntu-cloud-minimal livecd-rootfs
+         chromium-browser"
+# shellcheck disable=SC2086
+LEAKED="$(apt-cache policy $BLOCKED 2>/dev/null | awk '
+  /^[^ ].*:$/                 { p = $0; sub(/:$/, "", p); next }
+  /^ +Candidate: / && p != "" { if ($2 != "(none)") print p "(" $2 ")"; p = "" }')"
+if [ -n "$LEAKED" ]; then
+  for leak in $LEAKED; do
+    bad "$leak is installable - nosnap.pref is not blocking it"
+  done
 else
-  warn "firefox not installed - install it from Mozilla's repo after first boot"
+  ok "every package named in nosnap.pref is blocked"
 fi
+
+# The forward-looking one. Rather than trusting the hand-written list above to
+# stay complete, ask APT which packages hard-depend on snapd right now and
+# whether the pin still names all of them. If Ubuntu converts another deb into
+# a snap installer after this system is built, it surfaces here.
+#
+# WARN and not FAIL, deliberately: anything that hard-depends on snapd is
+# already uninstallable while snapd sits at -1, because APT will not pull snapd
+# in to satisfy it. Naming these packages in nosnap.pref does not close a hole,
+# it turns a confusing unmet-dependency error into an explicit refusal. The
+# check that actually matters - snapd's own candidate being (none) - is a FAIL
+# above.
+#
+# Reading each candidate's own Depends field rather than using `apt-cache
+# depends`: that command flattens OR groups onto separate lines, so
+# `Depends: foo | snapd` would read as a hard dependency. Splitting the real
+# field on commas and skipping any group containing '|' is what makes "hard"
+# mean it. Batched into three apt-cache calls; per-package calls take a minute.
+SNAPDEP_PKGS="$(apt-cache rdepends snapd 2>/dev/null \
+  | awk '/Reverse Depends:/{f=1;next} f{gsub(/^[ |]+/,""); print $1}' | sort -u)"
+SNAPDEP=""
+if [ -n "$SNAPDEP_PKGS" ]; then
+  # shellcheck disable=SC2086
+  SNAPDEP_CANDS="$(apt-cache policy $SNAPDEP_PKGS 2>/dev/null | awk '
+    /^[^ ].*:$/ { p = $0; sub(/:$/, "", p); next }
+    /^ +Candidate: / && p != "" && $2 != "(none)" { print p "=" $2; p = "" }')"
+  if [ -n "$SNAPDEP_CANDS" ]; then
+    # shellcheck disable=SC2086
+    SNAPDEP="$(apt-cache show $SNAPDEP_CANDS 2>/dev/null | awk -v RS="" '
+      {
+        pkg = ""; ver = ""; hard = 0
+        n = split($0, L, "\n")
+        for (i = 1; i <= n; i++) {
+          if (L[i] ~ /^Package: /) { pkg = substr(L[i], 10); continue }
+          if (L[i] ~ /^Version: /) { ver = substr(L[i], 10); continue }
+          if (L[i] !~ /^(Pre-)?Depends: /) continue
+          d = L[i]; sub(/^[^:]*: /, "", d)
+          m = split(d, g, ",")
+          for (j = 1; j <= m; j++) {
+            if (g[j] ~ /\|/) continue
+            gsub(/^[ \t]+|[ \t]+$/, "", g[j])
+            split(g[j], t, " ")
+            if (t[1] == "snapd") hard = 1
+          }
+        }
+        if (hard && pkg != "") printf " %s", pkg
+      }')"
+  fi
+fi
+if [ -n "$SNAPDEP" ]; then
+  warn "hard-depend on snapd but are not named in nosnap.pref:$SNAPDEP"
+  warn "  (they cannot install while snapd is pinned; add them for a clean refusal)"
+else
+  ok "every package that hard-depends on snapd is named in the pin"
+fi
+
+for app in firefox thunderbird; do
+  # Ubuntu's shims are the only builds ever versioned *snap*, so the version
+  # string identifies them. Fine as a detector here; the enforcement is the
+  # o=Ubuntu pin, which is what this is checking did its job.
+  APPC="$(apt-cache policy "$app" 2>/dev/null | awk '/Candidate:/{print $2}')"
+  case "$APPC" in
+    *snap*) bad "$app candidate is Ubuntu's snap shim ($APPC) - the o=Ubuntu pin is not working" ;;
+    ""|"(none)") : ;;
+    *)      ok "$app candidate is a real deb ($APPC)" ;;
+  esac
+
+  if dpkg -s "$app" >/dev/null 2>&1; then
+    APPV="$(dpkg-query -W -f='${Version}' "$app" 2>/dev/null)"
+    case "$APPV" in
+      *snap*) bad "installed $app is the snap shim ($APPV)" ;;
+      *)      ok "$app installed ($APPV)" ;;
+    esac
+  else
+    warn "$app not installed - Mozilla's repo or Flathub after first boot"
+  fi
+done
 
 if [ "$(apt-config dump APT::Install-Recommends 2>/dev/null | awk -F'"' '{print $2}')" = "false" ]; then
   ok "Install-Recommends is off system-wide"
@@ -230,7 +319,36 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-sect "7. Locale, time, swap, network"
+sect "7. Snapshot safety net"
+
+if dpkg-query -W -f='${Status}\n' apt-btrfs-snapshot 2>/dev/null | grep -q '^install ok installed'; then
+  ok "apt-btrfs-snapshot installed"
+
+  [ -e /etc/apt/apt.conf.d/80-btrfs-snapshot ] \
+    && ok "DPkg::Pre-Invoke hook in place" \
+    || bad "the apt hook is missing - no snapshot will be taken before upgrades"
+
+  apt-btrfs-snapshot supported >/dev/null 2>&1 \
+    && ok "layout supported (btrfs / on subvol=@)" \
+    || bad "apt-btrfs-snapshot says this layout is unsupported"
+
+  # MaxAge switches pruning to an atime-based path that cannot work on a
+  # noatime root, and disables the name-based prune at the same time.
+  if [ -n "$(apt-config dump APT::Snapshots::MaxAge 2>/dev/null)" ]; then
+    bad "APT::Snapshots::MaxAge is set - incompatible with the noatime root, and it disables auto-pruning"
+  else
+    ok "APT::Snapshots::MaxAge unset (name-based pruning stays active)"
+  fi
+
+  grep -q 'noatime' /etc/fstab 2>/dev/null \
+    && ok "root is noatime - retention is by snapshot name, as configured" \
+    || warn "root is not noatime; harmless, but the MaxAge caveat no longer applies"
+else
+  warn "apt-btrfs-snapshot not installed - upgrades will have no rollback point"
+fi
+
+# ---------------------------------------------------------------------------
+sect "8. Locale, time, swap, network"
 
 [ -e /etc/localtime ] && ok "timezone: $(cat /etc/timezone 2>/dev/null || readlink -f /etc/localtime)" \
                       || bad "/etc/localtime missing"

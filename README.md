@@ -315,17 +315,25 @@ head -60 /root/install/phase7-desktop.sh
 | Değişken | Varsayılan | Diğer seçenek |
 |---|---|---|
 | `DESKTOP_MODE` | `"ubuntu"` — tam Ubuntu masaüstü, dock dahil | `"pure"` — bileşenlerden GNOME, dock yok |
-| `FIREFOX_CHANNEL` | `"firefox"` — rapid release, ~4 haftada bir major sürüm | `"firefox-esr"` — yılda bir major, arada güvenlik yaması |
+| `FIREFOX_CHANNEL` | **`"firefox-esr"`** — yılda bir major, arada güvenlik yaması | `"firefox"` — rapid release, ~4 haftada bir major |
 | `INSTALL_THUNDERBIRD` | `"flatpak"` — Flathub'dan kurar | `"no"` — atla |
+| `THUNDERBIRD_REF` | `"org.mozilla.Thunderbird"` | `...//esr` gibi bir branch — **varsa** |
 
 **Firefox kanalı.** İkisi de Mozilla'nın APT deposundan gelir; Ubuntu arşivinde
-ikisi de yok (`firefox` orada snap kurucusu, `firefox-esr` hiç yok). Kararlılık
-öncelikliyse `firefox-esr` bu kurulumun geri kalanıyla daha tutarlı.
+ikisi de yok (`firefox` orada snap kurucusu, `firefox-esr` hiç yok). Varsayılan
+ESR, çünkü bu kurulumun geri kalanı da kararlılık için optimize edilmiş.
 
-> Mozilla deposunun `firefox-esr` paketi taşıyıp taşımadığı bu script
-> yazılırken doğrulanamadı. Taşımıyorsa script **hiçbir şey kurmaz** ve bunu
-> söyler — istemediğin bir sürüm kadansına sessizce düşmez. O durumda
-> `apt policy firefox-esr firefox` ile bakıp elle seçersin.
+> **Doğrulanamadı:** Mozilla deposunun `firefox-esr` paketi taşıyıp taşımadığı
+> bu script yazılırken kontrol edilemedi — `packages.mozilla.org` yazan
+> makineden erişilemiyordu. Taşımıyorsa script **hiçbir tarayıcı kurmaz**,
+> `apt policy firefox firefox-esr` çıktısını ekrana basar ve seçimi sana
+> bırakır. İstemediğin bir sürüm kadansına sessizce düşmez.
+>
+> Bu durumda tek komut yeter:
+>
+> ```bash
+> sudo apt install firefox
+> ```
 
 Firefox `Pin-Priority: 1000` ile `packages.mozilla.org` kaynağına sabitlenir.
 Ubuntu'nun `firefox` paketini **asla kurma**.
@@ -340,11 +348,30 @@ sudo apt update && sudo apt install -y firefox && apt policy firefox
 Çıktıda kaynağın `packages.mozilla.org` olduğunu ve sürümün `1:1snap1`
 **olmadığını** gör.
 
-**Thunderbird** fazın en sonunda Flathub'dan kurulur (`org.mozilla.Thunderbird`).
-Ubuntu'nun `thunderbird` deb'i de `2:1snap1`, yani snap kurucusu — pin onu
-engelliyor. En sona konması bilinçli: bu fazın en uzun ağ adımı, koptuğunda
-üstündeki her şey çoktan bitmiş oluyor ve maliyeti ilk açılıştan sonra tek
-komut.
+**Thunderbird** fazın en sonunda Flathub'dan kurulur. Ubuntu'nun `thunderbird`
+deb'i de `2:1snap1`, yani snap kurucusu — pin onu engelliyor. En sona konması
+bilinçli: bu fazın en uzun ağ adımı, koptuğunda üstündeki her şey çoktan
+bitmiş oluyor ve maliyeti ilk açılıştan sonra tek komut.
+
+> **ESR hakkında dürüst not.** Flathub'da Thunderbird için ayrı bir ESR ref'i
+> olup olmadığını doğrulayamadım — Flathub da o makineden erişilemiyordu.
+> Bilinen şey şu: Thunderbird'ün kendi sürümleri proje tarihinin büyük
+> kısmında zaten ESR tabanlıydı, yani varsayılan branch muhtemelen **zaten**
+> ESR hattı ve ayrı bir ref hiç olmayabilir.
+>
+> Tahmini koda gömmek yerine script, kurulumdan hemen önce Flathub'ın
+> gerçekten yayınladığı Thunderbird ref'lerini listeliyor:
+>
+> ```
+>     Thunderbird refs Flathub publishes:
+>       org.mozilla.Thunderbird/x86_64/stable    140.x
+>     installing: org.mozilla.Thunderbird
+> ```
+>
+> Bu listeyi kurulumu yapan makinede oku — o Flathub'a erişebiliyor. Ayrı bir
+> ESR branch'i görürsen `THUNDERBIRD_REF`'i ona çevirip fazı tekrar çalıştır;
+> görmezsen varsayılan zaten istediğin şey. Kurulumdan sonra script
+> `flatpak info` çıktısıyla hangi sürümün geldiğini de basıyor.
 
 > **Profil yolu — Faz 9'dan önce oku.** Faz 9 eski profili `~/.thunderbird`
 > altına geri getiriyor; deb sürümü oraya bakar, **Flatpak sürümü bakmaz**.
@@ -910,7 +937,7 @@ gsettings set org.gnome.mutter experimental-features "['variable-refresh-rate', 
 
 | İhtiyaç | Yol |
 |---|---|
-| Firefox | Zaten kurulu, Mozilla APT deposundan (`FIREFOX_CHANNEL`). `apt policy firefox` ile kaynağı doğrula |
+| Firefox | Zaten kurulu, Mozilla APT deposundan — varsayılan `firefox-esr`. `apt policy firefox firefox-esr` ile kaynağı ve kanalı doğrula |
 | Thunderbird | Faz 7'de Flathub'dan kurulu. **Profil yolu** için 8. bölümdeki nota bak |
 | Chromium | Flathub `org.chromium.Chromium` |
 | Steam / oyun | Flathub `com.valvesoftware.Steam` |

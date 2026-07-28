@@ -38,21 +38,36 @@ DESKTOP_MODE="ubuntu"
 # The nosnap pin blocks 'firefox' from o=Ubuntu only, which does not touch
 # either Mozilla build.
 #
-# Whether Mozilla's repo actually carries firefox-esr was not verifiable when
-# this was written. If it does not, the script says so and installs nothing
-# rather than falling back to a channel you did not ask for.
-FIREFOX_CHANNEL="firefox"
+# Whether Mozilla's repo actually carries firefox-esr was NOT verifiable when
+# this was written - packages.mozilla.org was unreachable from the machine that
+# wrote it. If the channel below has no candidate the script installs nothing,
+# prints what both channels resolve to, and lets you pick. It will not quietly
+# put you on a release cadence you did not ask for.
+FIREFOX_CHANNEL="firefox-esr"
 
 # Thunderbird. Ubuntu's thunderbird deb is 2:1snap1 with Pre-Depends: snapd -
 # another snap installer - so it is pinned out and Flathub is the way in.
 #
-# flatpak = install org.mozilla.Thunderbird from Flathub at the end of this
-#           phase. Pulls the freedesktop runtime too, so budget a few hundred
-#           MB and some time.
+# flatpak = install THUNDERBIRD_REF from Flathub at the end of this phase.
+#           Pulls the freedesktop runtime too, so budget a few hundred MB.
 # no      = skip it; install it yourself after first boot.
 #
 # Read the profile-path note this prints at the end before running Phase 9.
 INSTALL_THUNDERBIRD="flatpak"
+
+# Which Flathub ref. Append a branch with '//' to pin a channel, e.g.
+# org.mozilla.Thunderbird//esr - IF such a branch exists.
+#
+# It could not be checked from here: Flathub was unreachable too. What is
+# known is that Thunderbird's own releases have been ESR-based for most of the
+# project's history, so the default branch may already BE the ESR line and a
+# separate ref may not exist at all.
+#
+# Rather than encode a guess, the script lists every Thunderbird ref Flathub
+# actually publishes right before it installs. Read that list on the machine
+# doing the install - it can reach Flathub, this one could not - and set this
+# to whichever ref you want.
+THUNDERBIRD_REF="org.mozilla.Thunderbird"
 # ============================================================================
 
 [ "$(id -u)" -eq 0 ] || { echo "FATAL: must run as root inside the chroot" >&2; exit 1; }
@@ -158,14 +173,13 @@ EOF
     ""|"(none)")
       # Deliberately no fallback to the other channel: silently installing a
       # release cadence nobody asked for is worse than installing nothing.
-      echo "    !! No $FIREFOX_CHANNEL candidate at all; skipping."
-      if [ "$FIREFOX_CHANNEL" = "firefox-esr" ]; then
-        echo "    !! Mozilla's repo may not carry firefox-esr. Check with:"
-        echo "    !!     apt policy firefox-esr firefox"
-        echo "    !! and install whichever channel you want by hand."
-      else
-        echo "    !! Fix the Mozilla repo, then: sudo apt install $FIREFOX_CHANNEL"
-      fi
+      # Print what BOTH channels resolve to so the choice takes one command,
+      # not an investigation.
+      echo "    !! No $FIREFOX_CHANNEL candidate at all; installing no browser."
+      echo "    !! What the archive offers right now:"
+      apt-cache policy firefox firefox-esr 2>/dev/null | sed 's/^/         /'
+      echo "    !! Pick one and install it by hand, e.g.:"
+      echo "    !!     sudo apt install firefox"
       ;;
     *snap*)
       echo "    !! The candidate is Ubuntu's snap shim ($FF_CAND), not Mozilla's build."
@@ -241,12 +255,27 @@ if [ "$INSTALL_THUNDERBIRD" = "flatpak" ]; then
     echo "    !! flatpak is not installed; skipping"
   elif ! flatpak remote-list 2>/dev/null | grep -q flathub; then
     echo "    !! the flathub remote is missing; skipping"
-    echo "    !! After first boot: flatpak install flathub org.mozilla.Thunderbird"
-  elif flatpak install -y --noninteractive flathub org.mozilla.Thunderbird; then
-    echo "    org.mozilla.Thunderbird installed  OK"
+    echo "    !! After first boot: flatpak install flathub $THUNDERBIRD_REF"
   else
-    echo "    !! Thunderbird did not install (network, or flatpak inside a chroot)."
-    echo "    !! After first boot: flatpak install flathub org.mozilla.Thunderbird"
+    # Ground truth beats a guess written months ago. This machine can reach
+    # Flathub; the one that wrote the script could not. If you wanted an ESR
+    # branch and no such ref is listed here, the default branch is all there
+    # is - which for Thunderbird has historically been the ESR line anyway.
+    echo "    Thunderbird refs Flathub publishes:"
+    flatpak remote-ls flathub --app --columns=ref,version 2>/dev/null \
+      | grep -i thunderbird | sed 's/^/      /' \
+      || echo "      (could not list - continuing anyway)"
+
+    echo "    installing: $THUNDERBIRD_REF"
+    if flatpak install -y --noninteractive flathub "$THUNDERBIRD_REF"; then
+      echo "    $THUNDERBIRD_REF installed  OK"
+      flatpak info "$THUNDERBIRD_REF" 2>/dev/null \
+        | grep -iE '^ *(Version|Branch|Ref):' | sed 's/^/      /' || true
+    else
+      echo "    !! $THUNDERBIRD_REF did not install."
+      echo "    !! If the ref is wrong, pick one from the list above."
+      echo "    !! After first boot: flatpak install flathub <ref>"
+    fi
   fi
 
   # The part that fails silently if nobody says it. Phase 9 restores the old

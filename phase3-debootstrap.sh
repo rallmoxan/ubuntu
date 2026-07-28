@@ -8,10 +8,9 @@
 #
 set -euo pipefail
 
-RELEASE="resolute"                       # Ubuntu 26.04 LTS - verified against archive
-MIRROR="http://archive.ubuntu.com/ubuntu/"
-MOUNT_OPTS="noatime,compress=zstd:3,ssd,discard=async,space_cache=v2"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=config.sh
+. "$SCRIPT_DIR/config.sh"
 
 [ "$(id -u)" -eq 0 ] || { echo "FATAL: run as root (sudo bash $0)" >&2; exit 1; }
 
@@ -74,7 +73,7 @@ fi
 if [ -d /mnt/debootstrap ]; then
   echo "FATAL: /mnt holds an INCOMPLETE debootstrap from an earlier run." >&2
   echo "       Start clean - re-run phase2b (it reformats), or remove the tree:" >&2
-  echo "         umount -R /mnt   # then re-run phase2b-partition-kingston.sh" >&2
+  echo "         umount -R /mnt   # then re-run phase2b-partition.sh" >&2
   exit 1
 fi
 
@@ -193,9 +192,10 @@ cp -a "$SCRIPT_DIR"/. /mnt/root/install/
 chmod +x /mnt/root/install/*.sh 2>/dev/null || true
 
 # The chroot has no other copy of these. If the staging failed you would only
-# find out after entering the chroot, with the Samsung no longer in reach.
-for needed in phase4-core.sh phase6-kernel.sh phase7-desktop.sh \
-              phase8-bootloader.sh verify-before-reboot.sh phase9-home-to-samsung.sh; do
+# find out after entering the chroot, with the live session no longer in reach.
+# config.sh is in the list for the same reason: every chroot phase sources it.
+for needed in config.sh phase4-core.sh phase6-kernel.sh phase7-desktop.sh \
+              phase8-bootloader.sh verify-before-reboot.sh phase9-migrate-home.sh; do
   [ -s "/mnt/root/install/$needed" ] \
     || { echo "FATAL: $needed did not reach /mnt/root/install/" >&2; exit 1; }
 done

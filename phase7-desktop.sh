@@ -6,86 +6,12 @@
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
-# ============================== EDIT THIS ===================================
-# ubuntu  = install the ubuntu-desktop-minimal metapackage with
-#           --no-install-recommends. Verified against the archive: snapd and
-#           the firefox snap shim are Recommends, not Depends, so they are NOT
-#           pulled in. You get the real Ubuntu desktop, dock and all.
-#           Caveat: gnome-shell-ubuntu-extensions hard-depends on gir1.2-snapd-2.
-#
-# pure    = skip the metapackage and build GNOME from components. Cost: no
-#           Ubuntu Dock, no Ubuntu desktop-icons, a plainer GNOME.
-#
-# NEITHER mode is free of snap-related *libraries*, and it is not possible to
-# make one: libpipewire-0.3-modules hard-depends on libsnapd-glib-2-1, so any
-# working audio stack pulls it. Verified against the resolute archive.
-# What both modes DO guarantee: snapd itself is never installed. A full
-# dependency-closure check over every package this installer requests found
-# exactly one hard path to snapd - Ubuntu's firefox shim - which is pinned out
-# below and refused explicitly. libsnapd-glib is a GLib binding: no daemon,
-# no /snap mount, no snap can be installed.
-DESKTOP_MODE="ubuntu"
-
-# Which Firefox channel to install from Mozilla's APT repo.
-#
-# firefox      = rapid release. A new major version roughly every 4 weeks.
-# firefox-esr  = Extended Support Release. One major version a year, security
-#                fixes backported in between. The calmer choice, and the one
-#                that matches what the rest of this install optimises for.
-#
-# Ubuntu's archive has NEITHER as a real deb - its 'firefox' is a snap
-# installer and there is no firefox-esr at all - so both come from Mozilla.
-# The nosnap pin blocks 'firefox' from o=Ubuntu only, which does not touch
-# either Mozilla build.
-#
-# Whether Mozilla's repo actually carries firefox-esr was NOT verifiable when
-# this was written - packages.mozilla.org was unreachable from the machine that
-# wrote it. If the channel below has no candidate the script installs nothing,
-# prints what both channels resolve to, and lets you pick. It will not quietly
-# put you on a release cadence you did not ask for.
-FIREFOX_CHANNEL="firefox-esr"
-
-# Thunderbird. Ubuntu's thunderbird deb is 2:1snap1 with Pre-Depends: snapd -
-# another snap installer - so it is pinned out and Flathub is the way in.
-#
-# flatpak = install THUNDERBIRD_REF from Flathub at the end of this phase.
-#           Pulls the freedesktop runtime too, so budget a few hundred MB.
-# no      = skip it; install it yourself after first boot.
-#
-# Read the profile-path note this prints at the end before running Phase 9.
-INSTALL_THUNDERBIRD="flatpak"
-
-# Which Flathub ref.
-#
-#   org.mozilla.thunderbird_esr  = the ESR line. Reported present on Flathub
-#                                  by someone who could actually reach it.
-#   org.mozilla.Thunderbird      = the regular app id.
-#
-# Note the different app IDs, not branches of one ID - which matters, because
-# the Flatpak profile directory is named after the ID. The profile note at the
-# end of this phase is derived from whatever is set here, so it stays correct
-# if you change it.
-#
-# The script lists every Thunderbird ref Flathub actually publishes right
-# before installing, and prints `flatpak info` for what landed. Trust that
-# output over this comment: the machine running the install can reach Flathub.
-THUNDERBIRD_REF="org.mozilla.thunderbird_esr"
-# ============================================================================
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=config.sh
+. "$SCRIPT_DIR/config.sh"
 
 [ "$(id -u)" -eq 0 ] || { echo "FATAL: must run as root inside the chroot" >&2; exit 1; }
 
-apt_install() {
-  local mode="$1"; shift
-  local avail=() miss=() p cand
-  for p in "$@"; do
-    cand="$(apt-cache policy "$p" 2>/dev/null | awk '/Candidate:/{print $2}')"
-    if [ -n "$cand" ] && [ "$cand" != "(none)" ]; then avail+=("$p"); else miss+=("$p"); fi
-  done
-  [ ${#miss[@]}  -gt 0 ] && printf '    !! NOT IN ARCHIVE, skipped: %s\n' "${miss[*]}"
-  [ ${#avail[@]} -eq 0 ] && return 0
-  # shellcheck disable=SC2086
-  apt-get install -y $mode "${avail[@]}"
-}
 
 apt-get update
 
@@ -95,6 +21,11 @@ apt-get update
   || { echo "FATAL: snapd is installable again. Check /etc/apt/preferences.d/nosnap.pref" >&2; exit 1; }
 
 # ------------------------------------------------------------ desktop base
+if [ "$DESKTOP_MODE" = "none" ]; then
+  echo "==> DESKTOP_MODE=none - nothing to do in this phase."
+  exit 0
+fi
+
 if [ "$DESKTOP_MODE" = "ubuntu" ]; then
   echo "==> Installing ubuntu-desktop-minimal (Depends only, no Recommends)"
   apt_install --no-install-recommends ubuntu-desktop-minimal
@@ -236,13 +167,15 @@ fi
 # It sets the DEFAULT: anyone who later flips the toggle in Extension Manager
 # still gets their way.
 echo "==> Disabling the snapd GNOME Shell extensions"
-cat > /usr/share/glib-2.0/schemas/99-nosnap-extensions.gschema.override <<'EOF'
+NOSNAP_OVERRIDE=/usr/share/glib-2.0/schemas/99-nosnap-extensions.gschema.override
+cat > "$NOSNAP_OVERRIDE" <<'EOF'
 [org.gnome.shell]
 disabled-extensions=['snapd-prompting@canonical.com', 'snapd-search-provider@canonical.com']
 
 [org.gnome.shell:ubuntu]
 disabled-extensions=['snapd-prompting@canonical.com', 'snapd-search-provider@canonical.com']
 EOF
+
 if glib-compile-schemas /usr/share/glib-2.0/schemas/ 2>/dev/null; then
   echo "    snapd-prompting + snapd-search-provider disabled by default"
 else
@@ -341,6 +274,57 @@ if [ "$INSTALL_THUNDERBIRD" = "flatpak" ]; then
         mv ~/.thunderbird ~/.var/app/$TB_APPID/.thunderbird
 NOTE
 fi
+
+# ------------------------------------------------------------ dock favourites
+# ubuntu-settings ships favorite-apps pointing at SNAP desktop files:
+#
+#   firefox_firefox.desktop, thunderbird_thunderbird.desktop,
+#   snap-store_snap-store.desktop, ubuntu-desktop-bootstrap_*.desktop
+#
+# None of those exist here, and neither do rhythmbox/libreoffice/yelp, which
+# this installer does not pull. The result is a dock of missing launchers.
+#
+# Rather than hardcode a replacement list that would rot the same way, build it
+# from .desktop files that are actually PRESENT - including Flatpak exports, so
+# Thunderbird lands in the dock under whatever ref was installed.
+if [ "$GENERATE_FAVORITES" = "yes" ]; then
+  echo "==> Generating dock favourites from what is installed"
+  FAVS=""
+  for app in "$FIREFOX_CHANNEL.desktop" firefox.desktop firefox-esr.desktop \
+             "${THUNDERBIRD_REF%%/*}.desktop" \
+             org.gnome.Nautilus.desktop \
+             org.gnome.Ptyxis.desktop org.gnome.Terminal.desktop \
+             org.gnome.TextEditor.desktop \
+             org.gnome.Software.desktop \
+             gnome-control-center.desktop; do
+    # Skip a name we already added: firefox.desktop can match twice when
+    # FIREFOX_CHANNEL is plain "firefox".
+    case " $FAVS " in *"'$app'"*) continue ;; esac
+    for dir in /usr/share/applications \
+               /var/lib/flatpak/exports/share/applications; do
+      if [ -e "$dir/$app" ]; then
+        FAVS="$FAVS'$app', "
+        break
+      fi
+    done
+  done
+
+  if [ -n "$FAVS" ]; then
+    FAVS="${FAVS%, }"
+    printf '\n[org.gnome.shell]\nfavorite-apps=[%s]\n\n[org.gnome.shell:ubuntu]\nfavorite-apps=[%s]\n' \
+      "$FAVS" "$FAVS" >> "$NOSNAP_OVERRIDE"
+    echo "    favourites: $FAVS"
+    # Recompile: the override file grew after the earlier compile, and this
+    # runs after the Thunderbird install on purpose so the Flatpak's exported
+    # .desktop is already on disk to be found.
+    glib-compile-schemas /usr/share/glib-2.0/schemas/ 2>/dev/null \
+      || echo "    !! glib-compile-schemas failed; favourites will apply after the next recompile"
+  else
+    echo "    !! found none of the expected .desktop files; leaving Ubuntu's list alone"
+  fi
+fi
+
+
 
 echo
 echo "==> Phase 7 complete. Next: bash /root/install/phase8-bootloader.sh"

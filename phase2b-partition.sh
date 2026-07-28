@@ -1,23 +1,23 @@
 #!/usr/bin/env bash
 #
-# Phase 2b - Wipe and partition the Kingston target disk for Ubuntu 26.04
+# Phase 2b - Wipe and partition the target disk for Ubuntu 26.04
 #
 #   *** RUN FROM THE UBUNTU 26.04 LIVE SESSION ONLY ***
-#   *** THIS DESTROYS ALL DATA ON THE KINGSTON DISK ***
+#   *** THIS DESTROYS ALL DATA ON TARGET_DISK_SERIAL ***
 #
-# The Samsung disk (S6F5NL0TC03659) is NOT touched by this script.
-# It keeps your data and these scripts until Phase 9.
+# Every other disk is left alone. If MIGRATE_DISK_SERIAL is set in config.sh,
+# this script actively refuses to touch it.
 #
-# Usage:  sudo bash phase2b-partition-kingston.sh
+# Usage:  sudo bash phase2b-partition.sh
 #
 set -euo pipefail
 
-TARGET_SERIAL="50026B738450CE7B"
-TARGET_MODEL="KINGSTON SNV3S1000G"
-KEEP_SERIAL="S6F5NL0TC03659"          # Samsung - must never be touched here
-MOUNT_OPTS="noatime,compress=zstd:3,ssd,discard=async,space_cache=v2"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=config.sh
+. "$SCRIPT_DIR/config.sh"
 
 [ "$(id -u)" -eq 0 ] || { echo "FATAL: run as root (sudo bash $0)" >&2; exit 1; }
+require_config TARGET_DISK_SERIAL
 
 # ---------------------------------------------------------------- prerequisites
 echo "==> Checking network (needed to fetch the partitioning tools)"
@@ -31,39 +31,44 @@ apt-get install -y -qq gdisk btrfs-progs dosfstools
 # ------------------------------------------------- resolve target BY SERIAL only
 # Device names (nvme0n1 vs nvme1n1) can enumerate differently under the live
 # kernel. Matching on serial is the only safe way to identify the target.
-DISK=""
-for d in /dev/nvme?n? /dev/sd?; do
-  [ -b "$d" ] || continue
-  if [ "$(lsblk -dno SERIAL "$d" 2>/dev/null || true)" = "$TARGET_SERIAL" ]; then
-    DISK="$d"; break
-  fi
-done
+DISK="$(resolve_disk_by_serial "$TARGET_DISK_SERIAL")" || {
+  echo "FATAL: no disk with serial $TARGET_DISK_SERIAL found." >&2
+  show_disks
+  exit 1
+}
 
-if [ -z "$DISK" ]; then
-  echo "FATAL: no disk with serial $TARGET_SERIAL ($TARGET_MODEL) found." >&2
-  echo "Attached disks:" >&2
-  lsblk -dno NAME,SIZE,MODEL,SERIAL >&2
+# Paranoia: refuse to continue if the target and the disk to preserve are the
+# same. Cheap check, and the failure it prevents is total.
+if [ -n "${MIGRATE_DISK_SERIAL:-}" ] && [ "$TARGET_DISK_SERIAL" = "$MIGRATE_DISK_SERIAL" ]; then
+  echo "FATAL: TARGET_DISK_SERIAL and MIGRATE_DISK_SERIAL are the same disk." >&2
+  echo "       Phase 9 would have nothing to migrate from. Aborting." >&2
   exit 1
 fi
 
-# Paranoia: refuse to continue if we somehow resolved to the disk we must keep.
-if [ "$(lsblk -dno SERIAL "$DISK")" = "$KEEP_SERIAL" ]; then
-  echo "FATAL: resolved to the Samsung disk. Aborting." >&2
-  exit 1
+# Refuse to wipe the disk the live session itself is running from.
+LIVE_SRC="$(findmnt -no SOURCE / 2>/dev/null | sed 's/\[.*//')"
+if [ -n "$LIVE_SRC" ] && [ -b "$LIVE_SRC" ]; then
+  LIVE_DISK="/dev/$(lsblk -no PKNAME "$LIVE_SRC" 2>/dev/null || true)"
+  [ "$LIVE_DISK" = "$DISK" ] && {
+    echo "FATAL: that is the disk this live session is running from. Aborting." >&2
+    exit 1
+  }
 fi
 
-case "$DISK" in
-  *nvme*) P1="${DISK}p1"; P2="${DISK}p2" ;;
-  *)      P1="${DISK}1";  P2="${DISK}2"  ;;
-esac
+P1="$(partition_node "$DISK" 1)"
+P2="$(partition_node "$DISK" 2)"
 
 # ------------------------------------------------------------------ confirmation
 echo
 echo "================================================================"
-echo " TARGET (WILL BE COMPLETELY ERASED): $DISK"
+echo " TARGET (WILL BE COMPLETELY ERASED): $DISK  serial $TARGET_DISK_SERIAL"
 lsblk -o NAME,SIZE,FSTYPE,LABEL,MOUNTPOINT "$DISK"
 echo
-echo " PRESERVED (not touched): serial $KEEP_SERIAL"
+if [ -n "${MIGRATE_DISK_SERIAL:-}" ]; then
+  echo " PRESERVED (not touched): serial $MIGRATE_DISK_SERIAL"
+else
+  echo " Every other attached disk is left untouched."
+fi
 echo "================================================================"
 echo
 read -r -p "Type ERASE in capitals to destroy $DISK, anything else aborts: " CONFIRM
@@ -90,8 +95,8 @@ done
 echo "==> Writing fresh GPT to $DISK"
 wipefs -a "$DISK"
 sgdisk --zap-all "$DISK"
-sgdisk -n1:0:+1G -t1:ef00 -c1:"EFI"         "$DISK"   # ESP, 1G
-sgdisk -n2:0:0   -t2:8304 -c2:"ubuntu-root" "$DISK"   # Linux x86-64 root, rest
+sgdisk -n1:0:"+$ESP_SIZE" -t1:ef00 -c1:"EFI"         "$DISK"   # ESP
+sgdisk -n2:0:0            -t2:8304 -c2:"ubuntu-root" "$DISK"   # Linux x86-64 root, rest
 partprobe "$DISK"
 udevadm settle
 sleep 2
@@ -142,7 +147,4 @@ echo "Target disk : $DISK"
 echo "ESP         : $P1  -> /mnt/boot/efi"
 echo "Root btrfs  : $P2  -> /mnt (subvol=@)"
 echo
-echo "Next: mount the Samsung disk to reach the remaining phase scripts:"
-echo "  sudo mkdir -p /mnt-old"
-echo "  sudo mount -o subvol=@home UUID=bc8fb1bb-a4a5-4fa6-a76b-d89047b401bb /mnt-old"
-echo "  ls /mnt-old/baris/Ubuntu/"
+echo "Next: bash phase3-debootstrap.sh"

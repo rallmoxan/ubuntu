@@ -9,38 +9,17 @@
 #
 set -euo pipefail
 
-# ============================== EDIT THESE ==================================
-HOSTNAME="barzbug"
-USERNAME="baris"
-USER_UID="1000"                 # keeps ownership compatible with the old /home
-TIMEZONE="Europe/Istanbul"      # confirmed
-LOCALE="en_US.UTF-8"
-KEYMAP="us"                     # console + X keyboard layout
-RELEASE="resolute"
-MIRROR="http://archive.ubuntu.com/ubuntu/"
-# ============================================================================
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=config.sh
+. "$SCRIPT_DIR/config.sh"
 
 export DEBIAN_FRONTEND=noninteractive
 export LANG=C.UTF-8
 
 [ "$(id -u)" -eq 0 ] || { echo "FATAL: must run as root inside the chroot" >&2; exit 1; }
+require_config USERNAME HOSTNAME
 [ -e /etc/fstab ]    || { echo "FATAL: /etc/fstab missing - Phase 3 did not complete" >&2; exit 1; }
 grep -qE '^\S+\s+/\s+btrfs' /etc/fstab || { echo "FATAL: no root entry in /etc/fstab" >&2; exit 1; }
-
-# Install only what actually exists in the archive, and say what it skipped,
-# instead of aborting the whole run on one renamed package.
-apt_install() {
-  local mode="$1"; shift
-  local avail=() miss=() p cand
-  for p in "$@"; do
-    cand="$(apt-cache policy "$p" 2>/dev/null | awk '/Candidate:/{print $2}')"
-    if [ -n "$cand" ] && [ "$cand" != "(none)" ]; then avail+=("$p"); else miss+=("$p"); fi
-  done
-  [ ${#miss[@]}  -gt 0 ] && printf '    !! NOT IN ARCHIVE, skipped: %s\n' "${miss[*]}"
-  [ ${#avail[@]} -eq 0 ] && return 0
-  # shellcheck disable=SC2086
-  apt-get install -y $mode "${avail[@]}"
-}
 
 # ---------------------------------------------------- keep daemons from starting
 # Services must not try to start inside the chroot; 101 tells the maintainer

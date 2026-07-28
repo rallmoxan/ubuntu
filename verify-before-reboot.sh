@@ -9,6 +9,10 @@
 # Runs to completion and reports everything; it does not stop at the first
 # problem, because you want the whole list, not one item at a time.
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=config.sh
+. "$SCRIPT_DIR/config.sh"
+
 PASS=0; FAIL=0; WARN=0
 
 ok()   { printf '  \033[32mPASS\033[0m  %s\n' "$1"; PASS=$((PASS+1)); }
@@ -389,7 +393,7 @@ grep -qE '^\s*[^#]\S*\s+swap\s' /etc/fstab 2>/dev/null \
 [ -e /usr/sbin/policy-rc.d ] && bad "policy-rc.d still present - services will refuse to start on the real system" \
                              || ok "policy-rc.d removed"
 
-# Phase 9 runs after the reboot and repartitions the Samsung with sgdisk. It
+# Phase 9 runs after the reboot and repartitions the second disk with sgdisk. It
 # checks for itself before touching anything, but finding out here is cheaper
 # than finding out with the old disk still holding the only copy of your data.
 command -v sgdisk >/dev/null 2>&1 && ok "sgdisk present (Phase 9 needs it)" \

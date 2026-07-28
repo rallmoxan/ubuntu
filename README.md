@@ -9,7 +9,7 @@ hafızadan yazılmadı. Doğrulanmış gerçekler:
 | Şey | Değer |
 |---|---|
 | Kod adı | `resolute` = Ubuntu 26.04 LTS (23 Nisan 2026) |
-| Çekirdek | 7.0.0-28 (RX 9060 XT / RDNA4 tam destekli) |
+| Çekirdek | 7.0.0-28 |
 | Mesa | 26.0.3 |
 | GNOME | 50 |
 | Ubuntu'nun `firefox` paketi | `1:1snap1-0ubuntu8` — `Pre-Depends: snapd`, **sadece snap kurar**, kullanma |
@@ -19,30 +19,55 @@ hafızadan yazılmadı. Doğrulanmış gerçekler:
 
 ---
 
-## 0. Donanım ve plan
+## 0. Önce `config.sh`
 
-| | |
-|---|---|
-| CPU | AMD Ryzen 5 7500X3D |
-| GPU | Radeon RX 9060 XT (RDNA4) + Raphael iGPU |
-| RAM | 14 GiB |
-| Firmware | UEFI |
-| **Silinecek** | KINGSTON SNV3S1000G 931.5G — seri `50026B738450CE7B` |
-| **Faz 9'a kadar korunacak** | SAMSUNG MZVLQ512HBLU 476.9G — seri `S6F5NL0TC03659` |
+Bu depo tek bir makineye özel değil. Makineye özel **her şey** `config.sh`
+içinde; başka hiçbir dosyaya dokunman gerekmiyor.
 
-Disk düzeni: GPT · `p1` 1G ESP (FAT32) · `p2` kalan (btrfs)
-Subvolume'ler: `@ @home @snapshots @var_log @var_cache @var_lib_flatpak`
-Mount seçenekleri: `noatime,compress=zstd:3,ssd,discard=async,space_cache=v2`
-Swap: sadece zram. Disk swap yok, hazırda bekletme yok.
-Dil: `en_US.UTF-8`, klavye `us`, saat dilimi `Europe/Istanbul`.
-Hostname: `barzbug`. Kullanıcı: `baris` (uid 1000).
+**Zorunlu iki alan:**
 
-> Bunların hepsi `phase4-core.sh` dosyasının başındaki blokta yazılı ve
-> onaylandı — kurulum sırasında değiştirmen gereken bir şey yok.
+```bash
+TARGET_DISK_SERIAL=""   # SİLİNECEK disk
+USERNAME=""             # açılacak kullanıcı
+```
+
+Diskin serisini şöyle bul:
+
+```bash
+lsblk -dno NAME,SIZE,MODEL,SERIAL
+```
+
+Boş bırakırsan diske dokunan her faz bu listeyi basıp durur — yanlışlıkla
+yanlış diski silmek mümkün değil.
 
 > ⚠️ **Diskleri asla `nvme0n1` / `nvme1n1` isimleriyle ayırt etme.** Live
 > çekirdek altında sıra değişebilir. Bütün scriptler diski **seri numarasından**
-> bulur ve yanlış diske denk gelirse kendini durdurur.
+> bulur, ayrıca live oturumun kendi diskini ve Faz 9'a ayrılmış diski silmeyi
+> reddeder.
+
+**İsteğe bağlı, makul varsayılanları var:**
+
+| Ayar | Varsayılan | Ne işe yarar |
+|---|---|---|
+| `HOSTNAME` | `ubuntu-nosnap` | |
+| `TIMEZONE` / `LOCALE` / `KEYMAP` | `Europe/Istanbul` / `en_US.UTF-8` / `us` | |
+| `CPU_VENDOR` / `GPU_VENDOR` | `auto` | Mikrokod ve grafik yığını donanımdan tespit edilir |
+| `DESKTOP_MODE` | `ubuntu` | `pure` (sade GNOME) veya `none` |
+| `FIREFOX_CHANNEL` | `firefox-esr` | veya `firefox` |
+| `THUNDERBIRD_REF` | `org.mozilla.thunderbird_esr` | Flathub kimliği |
+| `MIGRATE_DISK_SERIAL` | boş | Faz 9 — ikinci disk yoksa boş bırak |
+
+**NVIDIA notu:** tescilli sürücü **bilerek** kurulmuyor. Doğru sürücü kartın
+kuşağına ve Secure Boot durumuna bağlı; tahmin etmek ilk açılışta siyah ekran
+demek. Nouveau ile masaüstüne çıkarsın, sonra `sudo ubuntu-drivers install`.
+
+### Sabit tasarım kararları
+
+Disk düzeni: GPT · `p1` ESP (FAT32, `ESP_SIZE`) · `p2` kalan (btrfs)
+Subvolume'ler: `@ @home @snapshots @var_log @var_cache @var_lib_flatpak`
+Mount seçenekleri: `noatime,compress=zstd:3,ssd,discard=async,space_cache=v2`
+Swap: sadece zram. Disk swap yok, hazırda bekletme yok.
+Firmware: **sadece UEFI** — BIOS/CSM yolu yok.
 
 ---
 
@@ -51,13 +76,13 @@ Hostname: `barzbug`. Kullanıcı: `baris` (uid 1000).
 **1.1 ISO indir**
 
 ```bash
-curl -L -o /home/baris/ubuntu-26.04-desktop-amd64.iso https://releases.ubuntu.com/26.04/ubuntu-26.04-desktop-amd64.iso
+curl -L -o ~/ubuntu-26.04-desktop-amd64.iso https://releases.ubuntu.com/26.04/ubuntu-26.04-desktop-amd64.iso
 ```
 
 **1.2 Doğrula** — çıktı `OK` olmalı, olmazsa tekrar indir:
 
 ```bash
-echo "487f87faaf547ea30e0aba4d5b53346292571256b25333a978db1692bcee9dd2  /home/baris/ubuntu-26.04-desktop-amd64.iso" | sha256sum -c -
+echo "487f87faaf547ea30e0aba4d5b53346292571256b25333a978db1692bcee9dd2  ~/ubuntu-26.04-desktop-amd64.iso" | sha256sum -c -
 ```
 
 **1.3 USB'yi tak ve bul**
@@ -87,19 +112,20 @@ lsblk -o NAME,SIZE,MODEL,TRAN,HOTPLUG "$U"
 > Yukarıdaki çıktı gerçekten USB çubuğunu gösteriyorsa devam et.
 
 ```bash
-sudo dd if=/home/baris/ubuntu-26.04-desktop-amd64.iso of="$U" bs=4M status=progress oflag=direct conv=fsync && sync
+sudo dd if=~/ubuntu-26.04-desktop-amd64.iso of="$U" bs=4M status=progress oflag=direct conv=fsync && sync
 ```
 
-**1.5 (isteğe bağlı) İkinci bir yedek**
+**1.5 Scriptleri yanına al**
 
 `dd` ile yazılmış çubuğa dosya kopyalayamazsın — ISO9660 olarak salt-okunur
-hale gelir. Yedek istiyorsan **ayrı** bir USB çubuğu kullan:
+hale gelir. Bu depoyu **ayrı** bir USB çubuğuna kopyala, ya da live oturumda
+doğrudan klonla:
 
 ```bash
-cp -r /home/baris/Ubuntu /media/baris/IKINCI_USB/
+git clone <bu-deponun-adresi> ubuntu-nosnap && cd ubuntu-nosnap
 ```
 
-Zorunlu değil: Samsung diski Faz 9'a kadar hiç silinmiyor, scriptler orada duruyor.
+Silmeyeceğin ikinci bir diskin varsa scriptleri orada da tutabilirsin.
 
 ---
 
@@ -117,59 +143,38 @@ Zorunlu değil: Samsung diski Faz 9'a kadar hiç silinmiyor, scriptler orada dur
 mokutil --sb-state
 ```
 
-**Scriptlere ulaş** — Samsung diski bağla:
+**Scriptlere ulaş.** USB'den kopyaladıysan çubuğu bağla, ya da:
 
 ```bash
-sudo mkdir -p /mnt-old
-sudo mount -o subvol=@home UUID=bc8fb1bb-a4a5-4fa6-a76b-d89047b401bb /mnt-old
-ls /mnt-old/baris/Ubuntu/
+git clone <bu-deponun-adresi> && cd ubuntu-nosnap
 ```
 
+**`config.sh`'i şimdi doldur** (0. bölüm). Diske dokunan hiçbir faz o dosya
+eksikken çalışmaz:
+
 ```bash
-cd /mnt-old/baris/Ubuntu
+lsblk -dno NAME,SIZE,MODEL,SERIAL
+nano config.sh
 ```
 
 ---
 
-## 3. Faz 2b — Kingston'ı sil ve bölümle
+## 3. Faz 2b — hedef diski sil ve bölümle
 
-> ⚠️ **Bu adım Debian kurulumunu kalıcı olarak yok eder.** Script `ERASE`
-> yazmanı isteyecek. Samsung'a dokunmaz.
+> ⚠️ **Bu adım `TARGET_DISK_SERIAL` diskindeki her şeyi kalıcı olarak yok
+> eder.** Script `ERASE` yazmanı isteyecek. Başka hiçbir diske dokunmaz;
+> `MIGRATE_DISK_SERIAL` ve live oturumun kendi diski açıkça korunur.
 
 ```bash
-sudo bash phase2b-partition-kingston.sh
+sudo bash phase2b-partition.sh
 ```
 
 Sonunda `findmnt -R /mnt` çıktısında `/mnt`, `/mnt/home`, `/mnt/var/log`,
 `/mnt/boot/efi` görünmeli. Görünmüyorsa devam etme.
 
-**Elle yapmak istersen** — önce diski **seri numarasından** bul, cihaz adına
-güvenme:
-
-```bash
-lsblk -dno NAME,SIZE,MODEL,SERIAL
-```
-
-Kingston'ın (`50026B738450CE7B`) hangi isme düştüğünü gör, sonra o ismi bir
-değişkene koy ve komutlarda hep onu kullan:
-
-```bash
-D=/dev/nvme0n1   # <-- yukarıdaki çıktıda Kingston hangisiyse ONU yaz
-```
-
-> ⚠️ Aşağıdaki ilk komut `$D` diskini geri dönüşsüz siler. Yazmadan önce
-> `lsblk $D` ile doğru diske baktığını teyit et.
-
-```bash
-sudo wipefs -a "$D" && sudo sgdisk --zap-all "$D" && sudo sgdisk -n1:0:+1G -t1:ef00 -c1:"EFI" "$D" && sudo sgdisk -n2:0:0 -t2:8304 -c2:"ubuntu-root" "$D" && sudo partprobe "$D"
-```
-
-```bash
-sudo mkfs.vfat -F32 -n EFI "${D}p1" && sudo mkfs.btrfs -f -L ubuntu-root "${D}p2"
-```
-
-Ama script bunu seri numarası kontrolü, `ERASE` onayı ve bölüm-hazır beklemesiyle
-birlikte yapıyor — elle yapmanın hiçbir avantajı yok.
+Script diski seri numarasından bulur, `ERASE` onayı ister, bölümlerin
+hazır olmasını bekler ve yanlış diske denk gelirse durur. Elle yapmanın
+hiçbir avantajı yok.
 
 ---
 
@@ -214,12 +219,11 @@ cat /etc/os-release | head -3 && ls /root/install/
 
 ## 6. Faz 4 + 5 — çekirdek yapılandırma ve snap engeli
 
-Ayarlar dosyanın başında hazır: `HOSTNAME="barzbug"`, `USERNAME="baris"`,
-`TIMEZONE="Europe/Istanbul"`. Değiştirmen gerekmiyor; yine de bir bakmak
-istersen:
+Ayarlar `config.sh`'ten geliyor (`HOSTNAME`, `USERNAME`, `TIMEZONE`, `LOCALE`,
+`KEYMAP`). Faz 3 o dosyayı da chroot'a kopyaladı; kontrol etmek istersen:
 
 ```bash
-head -20 /root/install/phase4-core.sh
+grep -E '^(HOSTNAME|USERNAME|TIMEZONE|LOCALE|KEYMAP)=' /root/install/config.sh
 ```
 
 ```bash
@@ -271,9 +275,14 @@ bash /root/install/phase6-kernel.sh
 Önemli nokta: `btrfs-progs` initramfs üretilmeden **önce** kurulur. Aksi halde
 initrd btrfs kökü bağlayamaz ve masaüstü yerine kernel panic alırsın.
 
-RX 9060 XT için `mesa-libgallium` + `mesa-vulkan-drivers` kurulur.
-(`mesa-va-drivers` ve `mesa-vdpau-drivers` 26.04'te **artık yok** — eski
-rehberlerdeki bu isimler kurulumu komple durdurur.)
+CPU mikrokodu ve grafik yığını donanımdan tespit edilir (`CPU_VENDOR`,
+`GPU_VENDOR` = `auto`). AMD ve Intel tamamen Mesa ile karşılanır:
+`mesa-libgallium` + `mesa-vulkan-drivers`. (`mesa-va-drivers` ve
+`mesa-vdpau-drivers` 26.04'te **artık yok** — eski rehberlerdeki bu isimler
+kurulumu komple durdurur.)
+
+NVIDIA'da tescilli sürücü **bilerek kurulmaz**; script ne yapman gerektiğini
+yazar. Nouveau ile masaüstüne çıkar, sonra `sudo ubuntu-drivers install`.
 
 ---
 
@@ -507,7 +516,7 @@ apt policy snapd
 glxinfo -B | grep -E "OpenGL renderer|OpenGL version"
 ```
 
-`AMD Radeon RX 9060 XT` görünmeli.
+Kartının adı görünmeli — `llvmpipe` görüyorsan sürücü yüklenmemiş demektir.
 
 ```bash
 sudo findmnt --verify --verbose
@@ -515,8 +524,9 @@ sudo findmnt --verify --verbose
 
 `Success, no errors or warnings detected` olmalı — fstab'da hata varsa burada çıkar.
 
-> Ev dizinin **boş** olacak, bu normal: `/home` şu an Kingston'daki taze
-> `@home` subvolume'ünde. Eski dosyaların Samsung'da duruyor, Faz 9'da alacaksın.
+> Ev dizinin **boş** olacak, bu normal: `/home` şu an kurulum diskindeki taze
+> `@home` subvolume'ünde. Faz 9 kullanacaksan eski dosyaların hâlâ eski
+> diskinde duruyor.
 
 Her şey iyiyse `quiet splash`'ı açabilirsin:
 
@@ -565,12 +575,16 @@ Ubuntu arşivinde yok, elle kurulması lazım. Bu repo onu kapsamıyor.
 
 ---
 
-## 12. Faz 9 — Samsung diski (en son)
+## 12. Faz 9 — /home'u ikinci diske taşı (isteğe bağlı)
+
+Bu faz **isteğe bağlı** ve yalnızca eski bir kurulumun diskini yeni `/home`
+yapmak istiyorsan gerekli. Tek diskin varsa `MIGRATE_DISK_SERIAL`'i boş bırak
+ve bu bölümü atla.
 
 Sistem düzgün açıldıktan **sonra**. Önce eski dosyaları al:
 
 ```bash
-sudo bash /root/install/phase9-home-to-samsung.sh restore
+sudo bash /root/install/phase9-migrate-home.sh restore
 ```
 
 İstediklerini kopyala (script komutu yazdırıyor). `.config` ve `.cache`'i
@@ -583,18 +597,18 @@ Elindekilerden emin olduktan sonra masaüstünden çık:
 sudo systemctl isolate multi-user.target
 ```
 
-> ⚠️ Açılan metin konsoluna **`root` olarak** giriş yap, `baris` olarak değil.
-> `baris` ile girersen ev dizinin `/home` üzerinde açık kalır, script de
-> "processes are using /home" deyip haklı olarak durur. Root parolasını
-> Faz 4'te belirlemiştin.
+> ⚠️ Açılan metin konsoluna **`root` olarak** giriş yap, normal kullanıcınla
+> değil. Kendi kullanıcınla girersen ev dizinin `/home` üzerinde açık kalır,
+> script de "processes are using /home" deyip haklı olarak durur. Root
+> parolasını Faz 4'te belirlemiştin.
 
 Sonra:
 
 ```bash
-bash /root/install/phase9-home-to-samsung.sh migrate
+bash /root/install/phase9-migrate-home.sh migrate
 ```
 
-Samsung silinir, `/home` oraya taşınır, `fstab` güncellenir (yedeği
+Eski disk silinir, `/home` oraya taşınır, `fstab` güncellenir (yedeği
 `/etc/fstab.bak`). Kopyalama sayıları tutmazsa fstab'a dokunmaz.
 
 > **Araç kontrolü.** `migrate` ilk iş olarak ihtiyaç duyduğu bütün komutları
@@ -846,15 +860,16 @@ Sonra `/etc/apt/preferences.d/nosnap.pref` dosyasının durduğunu doğrula.
 
 | Dosya | Nerede çalışır |
 |---|---|
-| `phase2b-partition-kingston.sh` | Live USB |
+| `config.sh` | **Önce bunu doldur** — bütün fazlar buradan okur |
+| `phase2b-partition.sh` | Live USB |
 | `phase3-debootstrap.sh` | Live USB |
 | `phase4-core.sh` | chroot |
 | `phase6-kernel.sh` | chroot |
 | `phase7-desktop.sh` | chroot |
 | `phase8-bootloader.sh` | chroot |
 | `verify-before-reboot.sh` | chroot — **yeniden başlatmadan önce zorunlu** |
-| `phase9-home-to-samsung.sh` | Açılmış Ubuntu |
-| `KURULUM_REHBERI.md` | Bu dosya |
+| `phase9-migrate-home.sh` | Açılmış Ubuntu (isteğe bağlı) |
+| `README.md` | Bu dosya |
 | `INSTALL_NOTES.md` | Karar ve donanım özeti (kısa referans kartı) |
 
 Faz 3, bu klasörün tamamını `/mnt/root/install/` altına kopyalar; chroot'a
@@ -936,17 +951,18 @@ echo -e "[Journal]\nSystemMaxUse=500M" | sudo tee /etc/systemd/journald.conf.d/s
 sudo systemctl restart systemd-journald
 ```
 
-### 15.3 Bu donanıma özel — RX 9060 XT ve zram
+### 15.3 Grafik ve zram doğrulaması
 
-Sürücü tarafında yapılacak bir şey yok; RDNA4 kernel 7.0 + Mesa 26 ile
-kutudan çalışıyor. Sadece doğrula:
+AMD ve Intel'de sürücü tarafında yapılacak bir şey yok — Mesa 26 kutudan
+çalışıyor. Doğrula:
 
 ```bash
 glxinfo -B | grep -E "OpenGL renderer|OpenGL version"
 vulkaninfo --summary | head -20
 ```
 
-Masaüstü makinesi olduğu için güç profilini sabitlemek mantıklı:
+Masaüstü makinesindeysen güç profilini sabitlemek mantıklı (dizüstünde
+`balanced` bırak):
 
 ```bash
 powerprofilesctl set performance
@@ -954,8 +970,8 @@ powerprofilesctl get
 ```
 
 zram zaten ayarlı (`vm.swappiness=180`, `page-cluster=0` — sıkıştırılmış RAM
-swap'ı için doğru değerler, diske swap'ın tersi). 14 GiB RAM'de baskı altında
-ne olduğunu görmek istersen:
+swap'ı için doğru değerler, diske swap'ın tersi; boyut RAM'in yarısı, 8 GiB
+tavanla). Baskı altında ne olduğunu görmek istersen:
 
 ```bash
 swapon --show && zramctl

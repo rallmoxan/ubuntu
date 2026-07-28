@@ -1,30 +1,48 @@
 #!/usr/bin/env bash
 #
-# Phase 9 - the deferred Samsung wipe. RUN ON THE BOOTED UBUNTU, not the live USB.
+# Phase 9 - move /home onto a second disk. OPTIONAL.
+#   RUN ON THE BOOTED UBUNTU, not the live USB.
 #
-#   sudo bash phase9-home-to-samsung.sh restore   # pull old files off the Samsung
-#   sudo bash phase9-home-to-samsung.sh migrate   # wipe Samsung, move /home onto it
+#   sudo bash phase9-migrate-home.sh restore   # mount the old disk, copy files off
+#   sudo bash phase9-migrate-home.sh migrate   # WIPE it, move /home onto it
+#
+# The intended shape: you replaced an older install, its disk still holds the
+# only copy of your data, and you want that disk to become the new /home once
+# you have taken what you need off it.
 #
 # Do 'restore' first, check you have what you want, only then 'migrate'.
-# Until 'migrate' runs, the Samsung still holds the ONLY copy of your old data.
+# Until 'migrate' runs, that disk holds the ONLY copy of your old data.
+#
+# Skip this phase entirely if you have one disk. Nothing else depends on it.
 #
 set -euo pipefail
 
-KEEP_SERIAL="S6F5NL0TC03659"                              # Samsung
-OLD_UUID="bc8fb1bb-a4a5-4fa6-a76b-d89047b401bb"           # old btrfs on the Samsung
-MOUNT_OPTS="noatime,compress=zstd:3,ssd,discard=async,space_cache=v2"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=config.sh
+. "$SCRIPT_DIR/config.sh"
+
 OLDMNT="/mnt/old-home"
 
 [ "$(id -u)" -eq 0 ] || { echo "FATAL: run as root" >&2; exit 1; }
 ACTION="${1:-}"
+require_config MIGRATE_DISK_SERIAL
 
-resolve_samsung() {
-  local d
-  for d in /dev/nvme?n? /dev/sd?; do
-    [ -b "$d" ] || continue
-    if [ "$(lsblk -dno SERIAL "$d" 2>/dev/null || true)" = "$KEEP_SERIAL" ]; then
-      echo "$d"; return 0
-    fi
+# Account name inside the old filesystem. Usually the same as the new one.
+OLD_USER="${OLD_HOME_USER:-$USERNAME}"
+
+# "auto" means: find the btrfs on the configured disk and use its UUID. One
+# less thing to copy by hand, and a UUID typo would mount the wrong filesystem.
+resolve_old_uuid() {
+  if [ "$OLD_HOME_UUID" != "auto" ] && [ -n "$OLD_HOME_UUID" ]; then
+    echo "$OLD_HOME_UUID"; return 0
+  fi
+  local disk part uuid
+  disk="$(resolve_disk_by_serial "$MIGRATE_DISK_SERIAL")" || return 1
+  for part in "${disk}"p* "${disk}"[0-9]*; do
+    [ -b "$part" ] || continue
+    [ "$(blkid -s TYPE -o value "$part" 2>/dev/null || true)" = "btrfs" ] || continue
+    uuid="$(blkid -s UUID -o value "$part" 2>/dev/null || true)"
+    [ -n "$uuid" ] && { echo "$uuid"; return 0; }
   done
   return 1
 }
@@ -33,9 +51,22 @@ resolve_samsung() {
 case "$ACTION" in
 
 restore)
-  echo "==> Mounting the old Samsung home at $OLDMNT (read-only)"
+  OLD_UUID="$(resolve_old_uuid)" || {
+    echo "FATAL: no btrfs filesystem found on the disk with serial $MIGRATE_DISK_SERIAL." >&2
+    echo "       Set OLD_HOME_UUID in config.sh explicitly if it is not btrfs" >&2
+    echo "       or lives somewhere this cannot guess. Filesystems seen:" >&2
+    lsblk -o NAME,SIZE,FSTYPE,LABEL,UUID >&2
+    exit 1
+  }
+
+  echo "==> Mounting the old home at $OLDMNT (read-only)"
+  echo "    UUID=$OLD_UUID  subvol=$OLD_HOME_SUBVOL"
   mkdir -p "$OLDMNT"
-  mountpoint -q "$OLDMNT" || mount -o ro,subvol=@home "UUID=$OLD_UUID" "$OLDMNT"
+  mountpoint -q "$OLDMNT" \
+    || mount -o "ro,subvol=$OLD_HOME_SUBVOL" "UUID=$OLD_UUID" "$OLDMNT" \
+    || { echo "FATAL: could not mount UUID=$OLD_UUID with subvol=$OLD_HOME_SUBVOL." >&2
+         echo "       If the old filesystem has no subvolumes, set OLD_HOME_SUBVOL=/ in config.sh." >&2
+         exit 1; }
 
   echo
   echo "Old data is now visible at: $OLDMNT"
@@ -45,18 +76,22 @@ restore)
 Copy what you want, for example:
 
     sudo rsync -aHAX --info=progress2 \\
-        $OLDMNT/baris/.mozilla \\
-        $OLDMNT/baris/.thunderbird \\
-        $OLDMNT/baris/.ssh \\
-        $OLDMNT/baris/Documents \\
-        $OLDMNT/baris/Pictures \\
+        $OLDMNT/$OLD_USER/.mozilla \\
+        $OLDMNT/$OLD_USER/.ssh \\
+        $OLDMNT/$OLD_USER/Documents \\
+        $OLDMNT/$OLD_USER/Pictures \\
         /home/\$SUDO_USER/
 
     sudo chown -R \$SUDO_USER:\$SUDO_USER /home/\$SUDO_USER
 
-Deliberately not copying .config or .cache: Debian GNOME 4x settings dropped
-into Ubuntu GNOME 50 is a common source of a broken-looking desktop. Copy
-individual app directories out of $OLDMNT/baris/.config if you need them.
+Deliberately not copying .config or .cache wholesale: another distribution's
+GNOME settings dropped into this one is a common source of a broken-looking
+desktop. Take individual app directories out of $OLDMNT/$OLD_USER/.config
+if you need them.
+
+Thunderbird, if you installed the Flatpak: its profile lives under
+~/.var/app/${THUNDERBIRD_REF%%/*}/.thunderbird, NOT ~/.thunderbird.
+Copy the old profile there, not to the home directory root.
 
 When you are satisfied:  sudo bash $0 migrate
 
@@ -97,8 +132,12 @@ migrate)
   # Never hold /home busy from our own working directory.
   cd /
 
-  DISK="$(resolve_samsung)" || { echo "FATAL: Samsung ($KEEP_SERIAL) not found" >&2; exit 1; }
-  case "$DISK" in *nvme*) PART="${DISK}p1" ;; *) PART="${DISK}1" ;; esac
+  DISK="$(resolve_disk_by_serial "$MIGRATE_DISK_SERIAL")" || {
+    echo "FATAL: no disk with serial $MIGRATE_DISK_SERIAL found." >&2
+    show_disks
+    exit 1
+  }
+  PART="$(partition_node "$DISK" 1)"
 
   # Refuse to wipe the disk we are booted from.
   ROOT_SRC="$(findmnt -no SOURCE / | sed 's/\[.*//')"
@@ -114,11 +153,11 @@ migrate)
   fi
 
   echo "================================================================"
-  echo " ABOUT TO ERASE: $DISK  (serial $KEEP_SERIAL)"
+  echo " ABOUT TO ERASE: $DISK  (serial $MIGRATE_DISK_SERIAL)"
   lsblk -o NAME,SIZE,FSTYPE,LABEL,MOUNTPOINT "$DISK"
   echo
   echo " Everything still on it, including the old @home, is destroyed."
-  echo " Current /home (on the Kingston) will be copied onto it afterwards."
+  echo " The current /home is copied onto it afterwards."
   echo "================================================================"
   read -r -p "Type ERASE to proceed: " C
   [ "$C" = "ERASE" ] || { echo "Aborted."; exit 1; }
@@ -165,15 +204,15 @@ migrate)
   echo "==> Done. Reboot, then confirm with:  findmnt /home"
   echo "    It must show $PART with subvol=/@home."
   echo
-  echo "    The now-unused @home subvolume on the Kingston can be reclaimed later:"
+  echo "    The now-unused @home subvolume on the root disk can be reclaimed later:"
   echo "      sudo btrfs subvolume delete /path/to/mounted/top-level/@home"
   echo "    (only after you have verified the new /home works)"
   ;;
 
 # ===========================================================================
 *)
-  echo "Usage: sudo bash $0 restore   # mount old Samsung home, copy files out"
-  echo "       sudo bash $0 migrate   # wipe Samsung, move /home onto it"
+  echo "Usage: sudo bash $0 restore   # mount the old disk read-only, copy files out"
+  echo "       sudo bash $0 migrate   # WIPE it, move /home onto it"
   exit 1
   ;;
 esac

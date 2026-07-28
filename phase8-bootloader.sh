@@ -6,21 +6,13 @@
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=config.sh
+. "$SCRIPT_DIR/config.sh"
+
 [ "$(id -u)" -eq 0 ] || { echo "FATAL: must run as root inside the chroot" >&2; exit 1; }
 mountpoint -q /boot/efi || { echo "FATAL: /boot/efi is not mounted inside the chroot" >&2; exit 1; }
 
-apt_install() {
-  local mode="$1"; shift
-  local avail=() miss=() p cand
-  for p in "$@"; do
-    cand="$(apt-cache policy "$p" 2>/dev/null | awk '/Candidate:/{print $2}')"
-    if [ -n "$cand" ] && [ "$cand" != "(none)" ]; then avail+=("$p"); else miss+=("$p"); fi
-  done
-  [ ${#miss[@]}  -gt 0 ] && printf '    !! NOT IN ARCHIVE, skipped: %s\n' "${miss[*]}"
-  [ ${#avail[@]} -eq 0 ] && return 0
-  # shellcheck disable=SC2086
-  apt-get install -y $mode "${avail[@]}"
-}
 
 # -------------------------------------------------------------------- GRUB
 echo "==> Installing GRUB (UEFI, Secure Boot capable)"
@@ -102,7 +94,7 @@ fi
 #
 # The one machine where this would be wrong is an ESP shared with another OS
 # that relies on the removable path - overwriting it would take that OS's
-# fallback with it. Not this machine: the Kingston is wiped and owns its ESP.
+# fallback with it. Not here: the target disk is wiped and owns its own ESP.
 echo "==> grub-install (re-assert EFI/BOOT/BOOTX64.EFI)"
 grub-install --target=x86_64-efi --efi-directory=/boot/efi \
              --removable --recheck

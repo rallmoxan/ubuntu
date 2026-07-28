@@ -56,32 +56,57 @@ echo "==> Installing the snap block BEFORE any package is installed"
 mkdir -p /etc/apt/preferences.d
 cat > /etc/apt/preferences.d/nosnap.pref <<'EOF'
 # No-snap policy. Priority -1 means "never install, not even as a dependency".
-Package: snapd
-Pin: release *
-Pin-Priority: -1
-
-Package: snapd-seed-glue
-Pin: release *
-Pin-Priority: -1
-
-Package: gnome-software-plugin-snap
-Pin: release *
-Pin-Priority: -1
-
-# Ubuntu's 'firefox' deb in 26.04 is version 1:1snap1 and does nothing but
-# install the Firefox snap. Phase 7 replaces it with Mozilla's real .deb.
 #
-# Pinned by ORIGIN, not by version string. A `Pin: version 1:1snap1*` pin stops
-# matching the day Ubuntu bumps the shim to 1:1snap2 or 2:1snap1, and then an
-# `apt full-upgrade` would try to pull the shim (and its Pre-Depends: snapd)
-# back in. o=Ubuntu blocks every firefox the Ubuntu archive will ever ship,
-# whatever it is versioned. Mozilla's repo is Origin: Mozilla and a Mozilla
-# Team PPA is Origin: LP-PPA-mozillateam, so neither is affected.
-Package: firefox
+# The list below is not "the snap things we plan to install". It is every
+# package in the resolute archive with a HARD dependency on snapd - Depends or
+# Pre-Depends, alternatives excluded - plus the frontends whose only job is
+# talking to snapd. Enumerated from the archive indices, not from memory:
+#
+#   apt-cache rdepends snapd \
+#     | awk '/Reverse Depends:/{f=1;next} f{gsub(/^[ |]+/,""); print $1}' \
+#     | sort -u \
+#     | while read -r p; do
+#         apt-cache depends "$p" | grep -qE '^ +(Pre)?Depends: snapd$' && echo "$p"
+#       done
+#
+# Blocking packages this desktop will never intentionally install is the point.
+# A no-snap system should not depend on remembering never to type
+# `apt install thunderbird`.
+
+# --- snapd itself, and the machinery that exists only to serve it -----------
+Package: snapd snapd-seed-glue snapd-installation-monitor
+Pin: release *
+Pin-Priority: -1
+
+# --- snap store frontends ---------------------------------------------------
+# fwupd-snap Pre-Depends on snapd; the rest are store plugins.
+Package: gnome-software-plugin-snap plasma-discover-backend-snap fwupd-snap
+Pin: release *
+Pin-Priority: -1
+
+# --- server/cloud/image metapackages that hard-depend on snapd --------------
+# None of these belong on a desktop, but ubuntu-server-minimal in particular is
+# an easy thing to type by accident, and it would drag snapd in as a Depends.
+Package: ubuntu-server-minimal ubuntu-cloud-minimal livecd-rootfs
+Pin: release *
+Pin-Priority: -1
+
+# --- Ubuntu's browser/mail "debs" that are only snap installers -------------
+# firefox    1:1snap1-0ubuntu8  Pre-Depends: snapd
+# thunderbird 2:1snap1-0ubuntu5 Pre-Depends: snapd
+# Note the different epochs: 1 vs 2. That is exactly why these are pinned by
+# ORIGIN and not by version string - a `Pin: version 1:1snap1*` pin never
+# matched thunderbird at all, and stops matching firefox the day Ubuntu bumps
+# the shim. o=Ubuntu blocks every version the Ubuntu archive will ever ship.
+# Mozilla's repo is Origin: Mozilla and the Mozilla Team PPA is
+# Origin: LP-PPA-mozillateam, so the real debs remain installable.
+Package: firefox thunderbird
 Pin: release o=Ubuntu
 Pin-Priority: -1
 
-# Same trick for Chromium.
+# chromium-browser is an Ubuntu-only package name and always the shim, so it is
+# blocked outright rather than per-origin. Real Chromium debs elsewhere are
+# named 'chromium' or 'ungoogled-chromium'; Flathub is the easy route.
 Package: chromium-browser
 Pin: release *
 Pin-Priority: -1
@@ -108,12 +133,33 @@ EOF
 apt-get update
 apt-get -y upgrade
 
-# Prove the pin works before we build anything on top of it.
-SNAP_PRIO="$(apt-cache policy snapd | awk '/Candidate:/{print $2}')"
-echo "==> snapd candidate is now: $SNAP_PRIO  (must be '(none)')"
-if [ "$SNAP_PRIO" != "(none)" ]; then
-  echo "FATAL: the snapd pin is not effective. Stopping before it can be pulled in." >&2
-  apt-cache policy snapd >&2
+# Prove the pin works before we build anything on top of it. Every name in
+# nosnap.pref is checked, not just snapd: the stanzas use the space-separated
+# multi-package form, so one bad name or one unsupported syntax would silently
+# leave part of the list unpinned until the day it mattered.
+#
+# Firefox and thunderbird are expected to be blocked HERE too - Mozilla's repo
+# does not exist yet at this point in the install, so the only candidate on
+# offer is Ubuntu's shim, and it must be refused.
+echo "==> Verifying every pin in nosnap.pref"
+PIN_FAIL=0
+for pkg in snapd snapd-seed-glue snapd-installation-monitor \
+           gnome-software-plugin-snap plasma-discover-backend-snap fwupd-snap \
+           ubuntu-server-minimal ubuntu-cloud-minimal livecd-rootfs \
+           firefox thunderbird chromium-browser; do
+  cand="$(apt-cache policy "$pkg" 2>/dev/null | awk '/Candidate:/{print $2}')"
+  if [ -z "$cand" ]; then
+    echo "    $pkg: not in this archive at all"
+  elif [ "$cand" = "(none)" ]; then
+    echo "    $pkg: blocked  OK"
+  else
+    echo "    !!!! $pkg: candidate is $cand - NOT blocked" >&2
+    PIN_FAIL=1
+  fi
+done
+if [ "$PIN_FAIL" -ne 0 ]; then
+  echo "FATAL: nosnap.pref is not fully effective. Stopping before anything can" >&2
+  echo "       be built on top of a broken pin." >&2
   exit 1
 fi
 apt-mark hold snapd 2>/dev/null || true

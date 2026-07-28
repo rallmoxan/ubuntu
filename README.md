@@ -12,8 +12,10 @@ hafızadan yazılmadı. Doğrulanmış gerçekler:
 | Çekirdek | 7.0.0-28 (RX 9060 XT / RDNA4 tam destekli) |
 | Mesa | 26.0.3 |
 | GNOME | 50 |
-| Ubuntu'nun `firefox` paketi | `1:1snap1` — `Pre-Depends: snapd`, **sadece snap kurar**, kullanma (sürüme değil, `o=Ubuntu` kaynağına göre pinlenir) |
+| Ubuntu'nun `firefox` paketi | `1:1snap1-0ubuntu8` — `Pre-Depends: snapd`, **sadece snap kurar**, kullanma |
+| Ubuntu'nun `thunderbird` paketi | `2:1snap1-0ubuntu5` — aynı şey, **epoch'u 2** (bu yüzden sürüm bazlı pin işe yaramaz, `o=Ubuntu` kaynağına göre pinleniyor) |
 | `snapd` | `ubuntu-desktop-minimal` içinde **Recommends**, Depends değil → pin + `--no-install-recommends` yeterli |
+| snapd'ye **sert** bağımlı paketler | resolute'ta 10 tane, hepsi `nosnap.pref`'te (aşağıda liste) |
 
 ---
 
@@ -228,13 +230,30 @@ Yaptıkları, bu sırayla:
 1. **`nosnap.pref`'i ilk iş olarak yazar** — tek bir `apt install` çalışmadan
    önce. Sonra yazarsan snapd bir Recommends üzerinden içeri sızabilir.
 2. deb822 formatında APT kaynakları (`resolute`, `-updates`, `-backports`, `-security`).
-3. **Pin'in çalıştığını kanıtlar**: `snapd` adayı `(none)` değilse kurulumu
-   durdurur.
-   Firefox pin'i sürüm dizesine değil **kaynağa** bağlıdır (`Pin: release
-   o=Ubuntu`): Ubuntu shim'i `1:1snap2` diye güncellenirse sürüm bazlı bir pin
-   ıskalardı, kaynak bazlı olan ıskalamaz. Mozilla deposu `Origin: Mozilla`,
-   Mozilla Team PPA'sı `Origin: LP-PPA-mozillateam` olduğu için ikisi de
-   bu engelden etkilenmez.
+3. **Pin'lerin çalıştığını kanıtlar**: `nosnap.pref`'teki **her** paket için
+   adayın `(none)` olduğunu doğrular, biri bile geçerse kurulumu durdurur.
+
+   Pin listesi "kuracağımız snap şeyler" değil, arşivde snapd'ye **sert**
+   bağımlı (Depends / Pre-Depends) olan **her paket** — hiç kurmayacağın
+   olanlar dahil. Kazara `apt install thunderbird` yazmayı hatırlamak zorunda
+   kalmamak için:
+
+   | Grup | Paketler |
+   |---|---|
+   | snapd ve makinesi | `snapd`, `snapd-seed-glue`, `snapd-installation-monitor` |
+   | snap mağaza eklentileri | `gnome-software-plugin-snap`, `plasma-discover-backend-snap`, `fwupd-snap` |
+   | sunucu/bulut metapaketleri | `ubuntu-server-minimal`, `ubuntu-cloud-minimal`, `livecd-rootfs` |
+   | snap kurucu "deb"leri | `firefox`, `thunderbird` (`o=Ubuntu`), `chromium-browser` |
+
+   Liste hafızadan değil arşivden çıkarıldı; komutu `nosnap.pref`'in yorumunda
+   duruyor, sürüm atladıktan sonra tekrar çalıştırabilirsin.
+
+   Firefox ve Thunderbird pin'i sürüm dizesine değil **kaynağa** bağlıdır
+   (`Pin: release o=Ubuntu`): firefox'un epoch'u 1, thunderbird'ünki 2 —
+   sürüm bazlı tek bir pin ikisini birden zaten tutamazdı, üstelik Ubuntu
+   shim'i `1:1snap2` diye güncellenince de ıskalardı. Mozilla deposu
+   `Origin: Mozilla`, Mozilla Team PPA'sı `Origin: LP-PPA-mozillateam`
+   olduğu için gerçek deb'ler bu engelden etkilenmez.
 4. `ubuntu-minimal` + `ubuntu-standard` (ikisi de snapd içermez — doğrulandı).
 5. Locale, saat dilimi, klavye, hostname, `/etc/hosts`, `machine-id`.
 6. Kullanıcı (uid 1000) + sudo grubu, **parola sorar**.
@@ -318,6 +337,14 @@ bash /root/install/phase8-bootloader.sh
   istersen `/etc/default/grub` içinde `"quiet splash"` yapıp `sudo update-grub` çalıştır.
 - `/etc/resolv.conf` symlink'i **en sonda** yapılır: erken yapılsaydı chroot
   içindeki apt'ın DNS'i kırılırdı.
+- **`apt-btrfs-snapshot` kurulur** — Faz 2b'den beri duran `@snapshots`
+  altyapısı ilk kez işe yarıyor. `/etc/apt/apt.conf.d/80-btrfs-snapshot`
+  içindeki `DPkg::Pre-Invoke` kancası, **her dpkg çalışmasından önce** `@`
+  subvolume'ünün snapshot'ını alır. Bozuk bir upgrade artık yeniden kurulum
+  değil, bir `set-default` + reboot meselesi. Kurulum sırası bilinçli:
+  `autoremove`'dan **sonra**, çünkü APT `apt.conf.d`'yi başlangıçta bir kez
+  okur — yani kanca kendi kurulumu sırasında tetiklenmez ve önceki fazlar
+  chroot içinde boşuna snapshot almaz.
 - `--no-install-recommends` **kalıcı** hale getirilir
   (`/etc/apt/apt.conf.d/99norecommends`). Bütün fazlar bu bayrağı komut
   satırında geçiyordu, ama o sadece o tek komut için geçerli — ilk açılıştan
@@ -406,6 +433,45 @@ Her şey iyiyse `quiet splash`'ı açabilirsin:
 ```bash
 sudo sed -i 's/^GRUB_CMDLINE_LINUX_DEFAULT=""/GRUB_CMDLINE_LINUX_DEFAULT="quiet splash"/' /etc/default/grub && sudo update-grub
 ```
+
+### Snapshot'lar ve geri dönüş
+
+İlk `apt` çalışmasından itibaren her dpkg işleminden önce otomatik snapshot
+alınır. Listelemek için:
+
+```bash
+sudo apt-btrfs-snapshot list
+```
+
+`@apt-snapshot-2026-07-28_14:03:11` gibi isimler göreceksin. Bozuk bir upgrade
+sonrası geri dönmek:
+
+```bash
+sudo apt-btrfs-snapshot set-default @apt-snapshot-2026-07-28_14:03:11
+sudo reboot
+```
+
+`set-default` mevcut `@`'yı `@apt-snapshot-old-root-<tarih>` olarak yeniden
+adlandırıp seçtiğin snapshot'ı `@` yapar. GRUB'un `rootflags=subvol=@` ile
+**isme** göre boot etmesi (subvolid'ye değil) bunu sorunsuz kılıyor — Faz 8'in
+o satırı açıkça yazmasının ikinci faydası.
+
+Bilmen gereken dört şey:
+
+| | |
+|---|---|
+| Nerede duruyorlar | btrfs'in **en üst seviyesinde** `@apt-snapshot-*` olarak, `/.snapshots` içinde değil |
+| Ne snapshot'lanıyor | **sadece `@`** — `/home`, `/var/log`, `/var/cache`, `/var/lib/flatpak` ayrı subvolume'ler, geri dönüş verini geri almaz |
+| Temizlik | snapshot alınırken otomatik: son 8 saatlik, 7 günlük, 2 haftalık (`/etc/apt/apt.conf.d/81-btrfs-snapshot-retain`) |
+| **Dokunma** | `APT::Snapshots::MaxAge` **ayarlama**. Temizliği atime tabanlı yola çevirir, kök `noatime` bağlı olduğu için hata verir, üstelik yukarıdaki otomatik temizliği de kapatır |
+
+> Not: paketin içindeki `/etc/cron.weekly/apt-btrfs-snapshot` yorumu ayar
+> anahtarını `APT::Snapshots::Retain::*` (çoğul) diye belgeliyor. Kodun
+> gerçekte okuduğu `APT::Snapshot::Retain::*` (tekil) — çoğul yazım sessizce
+> hiçbir şey yapmaz. Repodaki dosya doğru olanı kullanıyor.
+
+Snapshot'tan **boot menüsü** üzerinden dönmek istersen `grub-btrfs` gerekiyor;
+Ubuntu arşivinde yok, elle kurulması lazım. Bu repo onu kapsamıyor.
 
 ---
 
@@ -602,7 +668,24 @@ dpkg -l snapd 2>/dev/null   # boş
 ls -d /snap                 # olmamalı
 apt-mark showhold           # snapd görünmeli
 apt policy firefox          # kaynak packages.mozilla.org olmalı
+apt policy thunderbird      # Ubuntu'nun 2:1snap1'i OLMAMALI
+sudo apt-btrfs-snapshot list  # upgrade öncesi snapshot alınmış olmalı
 ```
+
+Arşiv değişmiş mi diye bakmak istersen — snapd'ye sert bağımlı olup pin'de
+adı geçmeyen bir paket var mı:
+
+```bash
+apt-cache rdepends snapd \
+  | awk '/Reverse Depends:/{f=1;next} f{gsub(/^[ |]+/,""); print $1}' | sort -u \
+  | while read -r p; do
+      [ "$(apt-cache policy "$p" | awk '/Candidate:/{print $2}')" = "(none)" ] || echo "$p"
+    done
+```
+
+Çıktı boşsa her şey yerinde. Bir isim çıkarsa `nosnap.pref`'e ekle —
+snapd zaten -1'de olduğu için o paket **kurulamaz**, ama eklemek anlaşılmaz
+bir bağımlılık hatası yerine temiz bir ret verir.
 
 `kept back` uyarısı görürsen sebebini `apt install -s <paket>` ile bul.
 
@@ -611,6 +694,33 @@ Asıl dikkat edilecek yer normal upgrade değil, **sürüm yükseltmesidir**
 dahil) devre dışı bırakır. Sürüm atladıktan sonra yukarıdaki beş komutu tekrar
 çalıştır ve `/etc/apt/sources.list.d/mozilla.sources` dosyasının hâlâ etkin
 olduğunu doğrula.
+
+### Thunderbird kurmak istiyorum
+
+`sudo apt install thunderbird` **çalışmaz** ve çalışmaması doğru: Ubuntu'nun
+`thunderbird` paketi `2:1snap1-0ubuntu5`, `Pre-Depends: snapd` taşıyan bir snap
+kurucusu. `nosnap.pref` onu `o=Ubuntu` ile engelliyor.
+
+Gerçek Thunderbird için iki yol — Flatpak Faz 7'de zaten kurulu:
+
+```bash
+flatpak install flathub org.mozilla.Thunderbird
+```
+
+ya da Mozilla'nın APT deposunda `thunderbird` paketi varsa (depo Faz 7'de
+eklendi, `o=Ubuntu` pin'i onu etkilemez):
+
+```bash
+apt policy thunderbird     # kaynak packages.mozilla.org mu?
+sudo apt install thunderbird
+```
+
+Aynısı Chromium için: `chromium-browser` engelli, Flathub'dan
+`org.chromium.Chromium` kur.
+
+Faz 9 eski `~/.thunderbird` profilini geri getiriyor; Flatpak sürümü profili
+`~/.var/app/org.mozilla.Thunderbird/.thunderbird` altında arar, deb sürümü
+`~/.thunderbird` altında. Hangisini kuracağına buna göre karar ver.
 
 ### Bir şekilde snapd geldi
 

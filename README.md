@@ -317,7 +317,7 @@ head -60 /root/install/phase7-desktop.sh
 | `DESKTOP_MODE` | `"ubuntu"` — tam Ubuntu masaüstü, dock dahil | `"pure"` — bileşenlerden GNOME, dock yok |
 | `FIREFOX_CHANNEL` | **`"firefox-esr"`** — yılda bir major, arada güvenlik yaması | `"firefox"` — rapid release, ~4 haftada bir major |
 | `INSTALL_THUNDERBIRD` | `"flatpak"` — Flathub'dan kurar | `"no"` — atla |
-| `THUNDERBIRD_REF` | `"org.mozilla.Thunderbird"` | `...//esr` gibi bir branch — **varsa** |
+| `THUNDERBIRD_REF` | **`"org.mozilla.thunderbird_esr"`** — ESR hattı | `"org.mozilla.Thunderbird"` — normal uygulama kimliği |
 
 **Firefox kanalı.** İkisi de Mozilla'nın APT deposundan gelir; Ubuntu arşivinde
 ikisi de yok (`firefox` orada snap kurucusu, `firefox-esr` hiç yok). Varsayılan
@@ -353,38 +353,61 @@ deb'i de `2:1snap1`, yani snap kurucusu — pin onu engelliyor. En sona konması
 bilinçli: bu fazın en uzun ağ adımı, koptuğunda üstündeki her şey çoktan
 bitmiş oluyor ve maliyeti ilk açılıştan sonra tek komut.
 
-> **ESR hakkında dürüst not.** Flathub'da Thunderbird için ayrı bir ESR ref'i
-> olup olmadığını doğrulayamadım — Flathub da o makineden erişilemiyordu.
-> Bilinen şey şu: Thunderbird'ün kendi sürümleri proje tarihinin büyük
-> kısmında zaten ESR tabanlıydı, yani varsayılan branch muhtemelen **zaten**
-> ESR hattı ve ayrı bir ref hiç olmayabilir.
->
-> Tahmini koda gömmek yerine script, kurulumdan hemen önce Flathub'ın
-> gerçekten yayınladığı Thunderbird ref'lerini listeliyor:
->
-> ```
->     Thunderbird refs Flathub publishes:
->       org.mozilla.Thunderbird/x86_64/stable    140.x
->     installing: org.mozilla.Thunderbird
-> ```
->
-> Bu listeyi kurulumu yapan makinede oku — o Flathub'a erişebiliyor. Ayrı bir
-> ESR branch'i görürsen `THUNDERBIRD_REF`'i ona çevirip fazı tekrar çalıştır;
-> görmezsen varsayılan zaten istediğin şey. Kurulumdan sonra script
-> `flatpak info` çıktısıyla hangi sürümün geldiğini de basıyor.
+ESR ayrı bir **branch** değil, ayrı bir **uygulama kimliği**:
+`org.mozilla.thunderbird_esr`. Bu ayrım önemli, çünkü Flatpak profil dizini
+kimliğe göre isimlendiriliyor — iki kimlik profil paylaşmaz.
+
+Script kurulumdan hemen önce Flathub'ın gerçekten yayınladığı Thunderbird
+ref'lerini listeliyor, kurulumdan sonra da `flatpak info` ile ne geldiğini
+basıyor. Kimlik değişirse aşağıdaki profil notu da kendini düzeltiyor
+(değişkenden türetiliyor).
 
 > **Profil yolu — Faz 9'dan önce oku.** Faz 9 eski profili `~/.thunderbird`
 > altına geri getiriyor; deb sürümü oraya bakar, **Flatpak sürümü bakmaz**.
-> Flatpak'te profil `~/.var/app/org.mozilla.Thunderbird/.thunderbird`. Geri
-> yükledikten sonra taşı:
+> Varsayılan kimlikle profil şurada:
 >
-> ```bash
-> mkdir -p ~/.var/app/org.mozilla.Thunderbird
-> mv ~/.thunderbird ~/.var/app/org.mozilla.Thunderbird/.thunderbird
+> ```
+> ~/.var/app/org.mozilla.thunderbird_esr/.thunderbird
 > ```
 >
-> Bunu atlarsan Thunderbird boş hesap listesiyle açılır ve geri yükleme
-> çalışmamış gibi görünür. Script bu notu kendi çıktısında da basıyor.
+> Geri yükledikten sonra taşı:
+>
+> ```bash
+> mkdir -p ~/.var/app/org.mozilla.thunderbird_esr
+> mv ~/.thunderbird ~/.var/app/org.mozilla.thunderbird_esr/.thunderbird
+> ```
+>
+> Atlarsan Thunderbird boş hesap listesiyle açılır ve geri yükleme çalışmamış
+> gibi görünür. Script bu notu kendi çıktısında da basıyor.
+
+### snapd GNOME Shell eklentileri
+
+`gnome-shell-ubuntu-extensions` paketi — `ubuntu-desktop-minimal`'in sert
+bağımlılığı — snapd ile konuşmak için var olan iki Shell eklentisi taşıyor ve
+Ubuntu bunları varsayılan olarak **açık** getiriyor:
+
+```
+/usr/share/gnome-shell/extensions/snapd-prompting@canonical.com/
+/usr/share/gnome-shell/extensions/snapd-search-provider@canonical.com/
+```
+
+Bunlar snap değil, JavaScript. snapd olmadan hiçbir şey yapmıyorlar — arama
+sağlayıcı hiç snap bulmuyor, izin sorucusunun soracağı bir daemon yok. Ama her
+oturumda gnome-shell'e yükleniyorlar ve Extension Manager'da görünüyorlar.
+
+Paketi kaldıramazsın: Ubuntu Dock, DING, AppIndicators ve Tiling Assistant da
+onunla gider. Faz 7 bunun yerine bir gschema override yazıp ikisini kapatıyor
+(`99-nosnap-extensions.gschema.override`). Varsayılanı değiştiriyor, yani
+istersen Extension Manager'dan yine açabilirsin.
+
+Zaten kurulmuş bir sistemde elle kapatmak istersen:
+
+```bash
+gnome-extensions disable snapd-prompting@canonical.com
+gnome-extensions disable snapd-search-provider@canonical.com
+```
+
+Wayland'de değişikliğin görünmesi için oturumu kapatıp açman gerekir.
 
 ---
 
@@ -772,7 +795,7 @@ Faz 7 `INSTALL_THUNDERBIRD="flatpak"` ile onu zaten kurmuş olmalı. Kurmadıysa
 (ağ koptuysa çıktıda söyler):
 
 ```bash
-flatpak install flathub org.mozilla.Thunderbird
+flatpak install flathub org.mozilla.thunderbird_esr
 ```
 
 ya da Mozilla'nın APT deposunda `thunderbird` paketi varsa (depo Faz 7'de
@@ -787,8 +810,9 @@ Aynısı Chromium için: `chromium-browser` engelli, Flathub'dan
 `org.chromium.Chromium` kur.
 
 Faz 9 eski `~/.thunderbird` profilini geri getiriyor; Flatpak sürümü profili
-`~/.var/app/org.mozilla.Thunderbird/.thunderbird` altında arar, deb sürümü
-`~/.thunderbird` altında. Hangisini kuracağına buna göre karar ver.
+`~/.var/app/<uygulama-kimliği>/.thunderbird` altında arar (varsayılan kimlikle
+`~/.var/app/org.mozilla.thunderbird_esr/`), deb sürümü `~/.thunderbird`
+altında. 8. bölümdeki taşıma komutuna bak.
 
 ### Bir şekilde snapd geldi
 

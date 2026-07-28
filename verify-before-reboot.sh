@@ -321,10 +321,20 @@ if dpkg -s thunderbird >/dev/null 2>&1; then
     *snap*) bad "installed thunderbird is the snap shim ($TBV)" ;;
     *)      ok "Thunderbird deb installed ($TBV)" ;;
   esac
-elif flatpak info org.mozilla.Thunderbird >/dev/null 2>&1; then
-  ok "Thunderbird installed as a Flatpak"
+elif TB_REF="$(flatpak list --app --columns=application 2>/dev/null | grep -iE '^org\.mozilla\.thunderbird' | head -1)" && [ -n "$TB_REF" ]; then
+  ok "Thunderbird installed as a Flatpak ($TB_REF)"
 else
   warn "Thunderbird not installed - Flathub after first boot"
+fi
+
+# The two snapd shell extensions ship with gnome-shell-ubuntu-extensions and
+# are enabled by default. They do nothing without snapd, but they load anyway.
+if [ -d /usr/share/gnome-shell/extensions/snapd-prompting@canonical.com ]; then
+  if grep -rqs 'snapd-prompting@canonical.com' /usr/share/glib-2.0/schemas/*.override; then
+    ok "snapd shell extensions disabled by default"
+  else
+    warn "snapd shell extensions are present and enabled - see phase 7"
+  fi
 fi
 
 if [ "$(apt-config dump APT::Install-Recommends 2>/dev/null | awk -F'"' '{print $2}')" = "false" ]; then

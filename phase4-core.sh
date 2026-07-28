@@ -70,8 +70,15 @@ Pin-Priority: -1
 
 # Ubuntu's 'firefox' deb in 26.04 is version 1:1snap1 and does nothing but
 # install the Firefox snap. Phase 7 replaces it with Mozilla's real .deb.
+#
+# Pinned by ORIGIN, not by version string. A `Pin: version 1:1snap1*` pin stops
+# matching the day Ubuntu bumps the shim to 1:1snap2 or 2:1snap1, and then an
+# `apt full-upgrade` would try to pull the shim (and its Pre-Depends: snapd)
+# back in. o=Ubuntu blocks every firefox the Ubuntu archive will ever ship,
+# whatever it is versioned. Mozilla's repo is Origin: Mozilla and a Mozilla
+# Team PPA is Origin: LP-PPA-mozillateam, so neither is affected.
 Package: firefox
-Pin: version 1:1snap1*
+Pin: release o=Ubuntu
 Pin-Priority: -1
 
 # Same trick for Chromium.

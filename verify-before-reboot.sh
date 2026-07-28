@@ -204,6 +204,15 @@ fi
   || bad "snapd is installable - the pin is not working"
 [ -d /snap ] && bad "/snap directory exists" || ok "/snap absent"
 
+# The pin must survive `apt full-upgrade` on the running system, so check that
+# it is written against the ORIGIN and not against one version string that the
+# next Ubuntu shim release would slip past.
+if grep -q 'Pin: release o=Ubuntu' /etc/apt/preferences.d/nosnap.pref 2>/dev/null; then
+  ok "firefox pinned by origin - survives shim version bumps"
+else
+  warn "firefox pin is not origin-based; a shim version bump could slip past it"
+fi
+
 if dpkg -s firefox >/dev/null 2>&1; then
   FFV="$(dpkg-query -W -f='${Version}' firefox 2>/dev/null)"
   case "$FFV" in
@@ -212,6 +221,12 @@ if dpkg -s firefox >/dev/null 2>&1; then
   esac
 else
   warn "firefox not installed - install it from Mozilla's repo after first boot"
+fi
+
+if [ "$(apt-config dump APT::Install-Recommends 2>/dev/null | awk -F'"' '{print $2}')" = "false" ]; then
+  ok "Install-Recommends is off system-wide"
+else
+  warn "Recommends are on - future apt installs will pull more than the build did"
 fi
 
 # ---------------------------------------------------------------------------

@@ -749,3 +749,172 @@ Sonra `/etc/apt/preferences.d/nosnap.pref` dosyasının durduğunu doğrula.
 
 Faz 3, bu klasörün tamamını `/mnt/root/install/` altına kopyalar; chroot'a
 girdikten sonra rehber de yanında olur.
+
+---
+
+## 15. Kurulum sonrası — ayarlar, eksikler, yapılmaması gerekenler
+
+Debootstrap kurulumu bittiğinde elinde çalışan ama **çıplak** bir sistem var.
+Ubuntu'nun installer'ının senin yerine yaptığı bazı şeyler burada yapılmadı;
+`--no-install-recommends` bilinçli bir tercihti ama bedeli var. Bu bölüm o
+bedeli ve bu donanıma özel ayarları listeliyor.
+
+### 15.1 Eksik olanlar — muhtemelen isteyeceklerin
+
+`--no-install-recommends` yüzünden `ubuntu-standard`'ın **Recommends** listesi
+hiç kurulmadı. İçinden dördü gerçekten önemli:
+
+| Paket | Neden |
+|---|---|
+| `apparmor` | **Kurulu değil.** Ubuntu'nun varsayılan zorunlu erişim denetimi. Paketlerin AppArmor profilleri diskte duruyor ama uygulayacak kimse yok. Masaüstünde ilk sıraya koyardım. |
+| `ufw` | Güvenlik duvarı. NAT arkasındaysan hayati değil, yine de bir satır. |
+| `update-manager-core` | Bu olmadan **`do-release-upgrade` komutu yok**. Sürüm atlamayı planlıyorsan gerekli. |
+| `command-not-found` | "komut bulunamadı, şu paketi kur" önerisi. Konfor. |
+
+```bash
+sudo apt install apparmor ufw update-manager-core command-not-found
+sudo systemctl enable --now apparmor
+sudo ufw enable
+```
+
+Güvenlik güncellemelerinin otomatik inmesini istersen (masaüstünde mantıklı;
+her apt işleminden önce zaten snapshot alınıyor):
+
+```bash
+sudo apt install unattended-upgrades
+sudo dpkg-reconfigure -plow unattended-upgrades
+```
+
+### 15.2 Bu kuruluma özel — btrfs bakımı
+
+Kök btrfs ve tek disk. İki ayar:
+
+```bash
+sudo apt install btrfsmaintenance
+```
+
+Haftalık `scrub` (sessiz veri bozulmasını yakalar, tek diskte **tespit** eder
+ama onaramaz — yine de bozulmayı fark etmen değerli) ve periyodik `balance`
+zamanlayıcıları kurar. Elle yapmak istersen ayda bir:
+
+```bash
+sudo btrfs scrub start / && sudo btrfs scrub status /
+sudo btrfs filesystem usage /
+```
+
+> **Bilinçli tekrar:** fstab'da `discard=async` var **ve** `fstrim.timer`
+> etkin. İkisi aynı işi yapıyor. Zararı yok, ama birini seçmek istersen genel
+> tavsiye `discard=async`'i bırakıp `sudo systemctl disable fstrim.timer`
+> demek. Bu repo ikisini de bırakıyor çünkü hangisinin bu SSD'de daha iyi
+> davrandığı ölçmeden bilinmez.
+
+VM imajı, veritabanı ya da büyük torrent dosyası tutacaksan o dizinde CoW'u
+kapat — btrfs'te bu dosyalar aksi halde parçalanır:
+
+```bash
+mkdir -p ~/VMs && chattr +C ~/VMs
+```
+
+`chattr +C` **boş** dizinde çalışır; içi doluyken uygulamak mevcut dosyaları
+etkilemez.
+
+`/var/log` ayrı subvolume'de ama journald varsayılan olarak dosya sisteminin
+%10'una kadar büyüyebilir. Sınırlamak istersen:
+
+```bash
+echo -e "[Journal]\nSystemMaxUse=500M" | sudo tee /etc/systemd/journald.conf.d/size.conf
+sudo systemctl restart systemd-journald
+```
+
+### 15.3 Bu donanıma özel — RX 9060 XT ve zram
+
+Sürücü tarafında yapılacak bir şey yok; RDNA4 kernel 7.0 + Mesa 26 ile
+kutudan çalışıyor. Sadece doğrula:
+
+```bash
+glxinfo -B | grep -E "OpenGL renderer|OpenGL version"
+vulkaninfo --summary | head -20
+```
+
+Masaüstü makinesi olduğu için güç profilini sabitlemek mantıklı:
+
+```bash
+powerprofilesctl set performance
+powerprofilesctl get
+```
+
+zram zaten ayarlı (`vm.swappiness=180`, `page-cluster=0` — sıkıştırılmış RAM
+swap'ı için doğru değerler, diske swap'ın tersi). 14 GiB RAM'de baskı altında
+ne olduğunu görmek istersen:
+
+```bash
+swapon --show && zramctl
+cat /proc/pressure/memory
+oomctl | head -20
+```
+
+`systemd-oomd` etkin ve agresif davranabilir. Bir uygulaman durup dururken
+kapanıyorsa suçlu odur: `journalctl -u systemd-oomd -b`.
+
+VRR monitörün varsa önce **Ayarlar → Ekranlar**'a bak; orada yoksa GNOME'un
+deneysel bayrağı:
+
+```bash
+gsettings set org.gnome.mutter experimental-features "['variable-refresh-rate', 'scale-monitor-framebuffer']"
+```
+
+(İkincisi kesirli ölçekleme içindir; ihtiyacın yoksa listeden çıkar.)
+
+### 15.4 Yazılım — snap'siz dünyada nereden ne kurulur
+
+| İhtiyaç | Yol |
+|---|---|
+| Firefox | Zaten kurulu, Mozilla APT deposundan. `apt policy firefox` ile kaynağı doğrula |
+| Thunderbird | Flathub `org.mozilla.Thunderbird` ya da Mozilla deposu — 13. bölüme bak |
+| Chromium | Flathub `org.chromium.Chromium` |
+| Steam / oyun | Flathub `com.valvesoftware.Steam` |
+| GNOME eklentileri | **Extension Manager** (kurulu). Tarayıcıdan kurmak istersen `sudo apt install gnome-browser-connector` |
+| Mağaza | GNOME Software'de Flathub çalışıyor; `gnome-software-plugin-flatpak` kurulu, snap eklentisi kasıtlı olarak yok |
+
+İlk açılışta Flathub metadata'sı henüz inmemiş olabilir:
+
+```bash
+flatpak update --appstream
+```
+
+### 15.5 Ubuntu Pro
+
+Attach edeceksen otomatik servis açmayı kapat — `livepatch` snap gerektiriyor
+ve pin yüzünden hata verir:
+
+```bash
+sudo pro attach <TOKEN> --no-auto-enable
+sudo pro enable esm-infra esm-apps
+```
+
+`livepatch`'i hiç açma. Taze bir 26.04'te `esm-infra` 2031'e kadar boş durur;
+bugünkü gerçek faydası `esm-apps` (universe paketleri için güvenlik desteği).
+
+### 15.6 **Yapma** — bu sistemi bozan şeyler
+
+| Yapma | Neden |
+|---|---|
+| `apt install firefox / thunderbird / chromium-browser` | Ubuntu arşivindeki üçü de `Pre-Depends: snapd` taşıyan snap kurucusu. Pin reddedecek |
+| `pro enable livepatch` | `canonical-livepatch` sadece snap olarak var, `apt-get install snapd` deneyip hata verir |
+| `APT::Snapshots::MaxAge` ayarlamak | Kök `noatime` bağlı; atime tabanlı temizlik hata verir **ve** otomatik temizliği kapatır |
+| `libsnapd-glib-2-1` / `gir1.2-snapd-2` kaldırmak | Bunlar snapd değil, GLib binding'i. `libpipewire-0.3-modules` sert bağımlı — kaldırırsan **sesi öldürürsün** |
+| `/etc/apt/preferences.d/nosnap.pref` silmek | Tek koruma katmanı bu |
+| `EFI/BOOT/BOOTX64.EFI` silmek | Anakart NVRAM girdisini unutursa açılışı kurtaran dosya |
+| Rastgele PPA eklemek | `apt policy snapd` çıktısını her PPA'dan sonra kontrol et |
+
+### 15.7 Aylık rutin
+
+```bash
+sudo apt update && sudo apt full-upgrade     # öncesinde otomatik snapshot alınır
+sudo apt-btrfs-snapshot list                 # snapshot gerçekten alınmış mı
+apt policy snapd                             # Candidate: (none)
+sudo btrfs scrub start /                     # btrfsmaintenance kurduysan gereksiz
+flatpak update
+```
+
+Bir upgrade sistemi bozarsa 11. bölümdeki geri dönüş adımları.

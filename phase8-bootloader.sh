@@ -68,20 +68,42 @@ for img in /boot/initrd.img-*; do
 done
 
 # ------------------------------------------------------------- grub-install
-echo "==> grub-install (NVRAM entry)"
-# Not fatal on its own: if efivars is not writable from the chroot the files
-# still land in the ESP, and the removable fallback below covers booting.
+# Two EFI paths end up populated, and they are not the same file:
+#
+#   EFI/Ubuntu/    - named entry, referenced from an NVRAM boot variable
+#   EFI/BOOT/BOOTX64.EFI - the UEFI "removable media path", which firmware
+#                          boots when no NVRAM entry matches. This is what
+#                          saves you when a board forgets its boot variables
+#                          after a disk wipe.
+#
+# GRUB 2.14 writes BOTH from the first call: the binary only carries
+# --no-extra-removable ("Do not install bootloader code to the removable media
+# path"), with no --force-extra-removable counterpart, so the extra copy is the
+# default and the flag is the opt-out. Older GRUB was the other way round.
+#
+# Both calls install the signed shim (grub-install references
+# /usr/lib/shim/shim*.efi.signed), so Secure Boot works from either path.
+echo "==> grub-install (NVRAM entry + removable copy)"
+# Not fatal on its own: NVRAM registration is the last thing grub-install does,
+# so a failure here means the ESP files are already written and only the boot
+# variable is missing - which the removable path covers.
 if grub-install --target=x86_64-efi --efi-directory=/boot/efi \
                 --bootloader-id=Ubuntu --recheck; then
   echo "    UEFI NVRAM entry written"
 else
   echo "    !! Could not write the NVRAM entry (efivars unavailable in chroot)."
-  echo "    !! The removable fallback below will still boot the system."
+  echo "    !! EFI/BOOT/BOOTX64.EFI will still boot the system."
 fi
 
-# Fallback path. Some firmware ignores NVRAM entries after a disk wipe; a
-# BOOTX64.EFI at the default path is what saves you from a black screen.
-echo "==> grub-install (removable fallback EFI/BOOT/BOOTX64.EFI)"
+# Redundant on 26.04 by the reasoning above, kept as insurance: it is the only
+# thing that still produces a bootable ESP if the call above died BEFORE the
+# file-copy stage rather than at NVRAM registration. Costs a second and a
+# rewrite of one file.
+#
+# The one machine where this would be wrong is an ESP shared with another OS
+# that relies on the removable path - overwriting it would take that OS's
+# fallback with it. Not this machine: the Kingston is wiped and owns its ESP.
+echo "==> grub-install (re-assert EFI/BOOT/BOOTX64.EFI)"
 grub-install --target=x86_64-efi --efi-directory=/boot/efi \
              --removable --recheck
 

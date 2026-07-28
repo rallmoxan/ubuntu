@@ -115,6 +115,23 @@ rm -f /usr/sbin/policy-rc.d
 apt-get -y autoremove --purge
 apt-get clean
 
+# ------------------------------------------------- make no-recommends permanent
+# Every phase passed --no-install-recommends on the command line, which governs
+# that one invocation and nothing else. The moment you run `sudo apt install X`
+# on the booted system, Recommends come back. snapd stays pinned at -1 either
+# way, so this is not what keeps snap out - it keeps the system as lean as the
+# one the installer built, and stops a stray Recommends from dragging in a
+# package whose own dependencies then collide with the pin.
+#
+# Written LAST, after autoremove: doing it earlier would change what the
+# install phases resolve. Override per command with --install-recommends.
+echo "==> Making --no-install-recommends the system default"
+cat > /etc/apt/apt.conf.d/99norecommends <<'EOF'
+APT::Install-Recommends "false";
+APT::Install-Suggests "false";
+EOF
+echo "    wrote /etc/apt/apt.conf.d/99norecommends"
+
 echo
 echo "==> Phase 8 complete."
 echo "==> NOW RUN THE AUDIT BEFORE YOU REBOOT:"

@@ -12,7 +12,7 @@ hafızadan yazılmadı. Doğrulanmış gerçekler:
 | Çekirdek | 7.0.0-28 (RX 9060 XT / RDNA4 tam destekli) |
 | Mesa | 26.0.3 |
 | GNOME | 50 |
-| Ubuntu'nun `firefox` paketi | `1:1snap1` — `Pre-Depends: snapd`, **sadece snap kurar**, kullanma |
+| Ubuntu'nun `firefox` paketi | `1:1snap1` — `Pre-Depends: snapd`, **sadece snap kurar**, kullanma (sürüme değil, `o=Ubuntu` kaynağına göre pinlenir) |
 | `snapd` | `ubuntu-desktop-minimal` içinde **Recommends**, Depends değil → pin + `--no-install-recommends` yeterli |
 
 ---
@@ -230,6 +230,11 @@ Yaptıkları, bu sırayla:
 2. deb822 formatında APT kaynakları (`resolute`, `-updates`, `-backports`, `-security`).
 3. **Pin'in çalıştığını kanıtlar**: `snapd` adayı `(none)` değilse kurulumu
    durdurur.
+   Firefox pin'i sürüm dizesine değil **kaynağa** bağlıdır (`Pin: release
+   o=Ubuntu`): Ubuntu shim'i `1:1snap2` diye güncellenirse sürüm bazlı bir pin
+   ıskalardı, kaynak bazlı olan ıskalamaz. Mozilla deposu `Origin: Mozilla`,
+   Mozilla Team PPA'sı `Origin: LP-PPA-mozillateam` olduğu için ikisi de
+   bu engelden etkilenmez.
 4. `ubuntu-minimal` + `ubuntu-standard` (ikisi de snapd içermez — doğrulandı).
 5. Locale, saat dilimi, klavye, hostname, `/etc/hosts`, `machine-id`.
 6. Kullanıcı (uid 1000) + sudo grubu, **parola sorar**.
@@ -313,6 +318,12 @@ bash /root/install/phase8-bootloader.sh
   istersen `/etc/default/grub` içinde `"quiet splash"` yapıp `sudo update-grub` çalıştır.
 - `/etc/resolv.conf` symlink'i **en sonda** yapılır: erken yapılsaydı chroot
   içindeki apt'ın DNS'i kırılırdı.
+- `--no-install-recommends` **kalıcı** hale getirilir
+  (`/etc/apt/apt.conf.d/99norecommends`). Bütün fazlar bu bayrağı komut
+  satırında geçiyordu, ama o sadece o tek komut için geçerli — ilk açılıştan
+  sonra `sudo apt install X` dediğinde Recommends geri gelirdi. Dosya
+  `autoremove`'dan **sonra** yazılır; daha erken yazılsa kurulum fazlarının
+  neyi çözdüğünü değiştirirdi. Tek seferlik istisna: `apt install --install-recommends X`.
 
 ---
 
@@ -569,6 +580,37 @@ DNS çalışmıyorsa:
 ```bash
 ls -l /etc/resolv.conf && systemctl status systemd-resolved
 ```
+
+### `apt update && apt full-upgrade` snap'i geri getirir mi?
+
+**Hayır.** `nosnap.pref` hiçbir pakete ait olmayan yerel bir dosyadır; APT onu
+güncelleme sırasında ne siler ne üzerine yazar. `Pin-Priority: -1` "asla kurma,
+**bağımlılık olarak bile**" demektir. İleride bir paket `Depends: snapd` haline
+gelirse APT snapd'yi kurmaz, **o paketi geri tutar** (`kept back`) — yani en kötü
+senaryo "snap geri geldi" değil, "bir paket güncellenmedi".
+
+Upgrade çıktısında `libsnapd-glib-2-1` ve `gir1.2-snapd-2` güncellenirken
+görürsen panik yapma: bunlar snapd **değil**, sadece GLib binding kütüphaneleri
+(`libpipewire-0.3-modules` bunlara sert bağımlı, 26.04'te kaçınılmaz — 8. bölüme
+bak). Servis yok, `/snap` mount yok, snap kurulamaz.
+
+Upgrade sonrası denetim:
+
+```bash
+apt policy snapd            # Candidate: (none)
+dpkg -l snapd 2>/dev/null   # boş
+ls -d /snap                 # olmamalı
+apt-mark showhold           # snapd görünmeli
+apt policy firefox          # kaynak packages.mozilla.org olmalı
+```
+
+`kept back` uyarısı görürsen sebebini `apt install -s <paket>` ile bul.
+
+Asıl dikkat edilecek yer normal upgrade değil, **sürüm yükseltmesidir**
+(`do-release-upgrade`): `ubuntu-release-upgrader` üçüncü parti depoları (Mozilla
+dahil) devre dışı bırakır. Sürüm atladıktan sonra yukarıdaki beş komutu tekrar
+çalıştır ve `/etc/apt/sources.list.d/mozilla.sources` dosyasının hâlâ etkin
+olduğunu doğrula.
 
 ### Bir şekilde snapd geldi
 

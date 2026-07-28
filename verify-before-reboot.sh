@@ -290,27 +290,42 @@ else
   ok "every package that hard-depends on snapd is named in the pin"
 fi
 
-for app in firefox thunderbird; do
-  # Ubuntu's shims are the only builds ever versioned *snap*, so the version
-  # string identifies them. Fine as a detector here; the enforcement is the
-  # o=Ubuntu pin, which is what this is checking did its job.
+# Ubuntu's shims are the only builds ever versioned *snap*, so the version
+# string identifies them. Fine as a detector here; the enforcement is the
+# o=Ubuntu pin, which is what this is checking did its job.
+for app in firefox firefox-esr thunderbird; do
   APPC="$(apt-cache policy "$app" 2>/dev/null | awk '/Candidate:/{print $2}')"
   case "$APPC" in
     *snap*) bad "$app candidate is Ubuntu's snap shim ($APPC) - the o=Ubuntu pin is not working" ;;
-    ""|"(none)") : ;;
-    *)      ok "$app candidate is a real deb ($APPC)" ;;
   esac
-
-  if dpkg -s "$app" >/dev/null 2>&1; then
-    APPV="$(dpkg-query -W -f='${Version}' "$app" 2>/dev/null)"
-    case "$APPV" in
-      *snap*) bad "installed $app is the snap shim ($APPV)" ;;
-      *)      ok "$app installed ($APPV)" ;;
-    esac
-  else
-    warn "$app not installed - Mozilla's repo or Flathub after first boot"
-  fi
 done
+
+# Either Firefox channel counts; both come from Mozilla and Phase 7 installs
+# whichever FIREFOX_CHANNEL names.
+FF_OK=""
+for app in firefox firefox-esr; do
+  dpkg -s "$app" >/dev/null 2>&1 || continue
+  APPV="$(dpkg-query -W -f='${Version}' "$app" 2>/dev/null)"
+  case "$APPV" in
+    *snap*) bad "installed $app is the snap shim ($APPV)" ;;
+    *)      FF_OK="$app $APPV" ;;
+  esac
+done
+[ -n "$FF_OK" ] && ok "Firefox installed: $FF_OK" \
+                || warn "no Firefox deb installed - Mozilla's repo after first boot"
+
+# Thunderbird is a Flatpak by default here, so an absent deb is not a finding.
+if dpkg -s thunderbird >/dev/null 2>&1; then
+  TBV="$(dpkg-query -W -f='${Version}' thunderbird 2>/dev/null)"
+  case "$TBV" in
+    *snap*) bad "installed thunderbird is the snap shim ($TBV)" ;;
+    *)      ok "Thunderbird deb installed ($TBV)" ;;
+  esac
+elif flatpak info org.mozilla.Thunderbird >/dev/null 2>&1; then
+  ok "Thunderbird installed as a Flatpak"
+else
+  warn "Thunderbird not installed - Flathub after first boot"
+fi
 
 if [ "$(apt-config dump APT::Install-Recommends 2>/dev/null | awk -F'"' '{print $2}')" = "false" ]; then
   ok "Install-Recommends is off system-wide"

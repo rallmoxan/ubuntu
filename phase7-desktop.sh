@@ -25,6 +25,34 @@ export DEBIAN_FRONTEND=noninteractive
 # below and refused explicitly. libsnapd-glib is a GLib binding: no daemon,
 # no /snap mount, no snap can be installed.
 DESKTOP_MODE="ubuntu"
+
+# Which Firefox channel to install from Mozilla's APT repo.
+#
+# firefox      = rapid release. A new major version roughly every 4 weeks.
+# firefox-esr  = Extended Support Release. One major version a year, security
+#                fixes backported in between. The calmer choice, and the one
+#                that matches what the rest of this install optimises for.
+#
+# Ubuntu's archive has NEITHER as a real deb - its 'firefox' is a snap
+# installer and there is no firefox-esr at all - so both come from Mozilla.
+# The nosnap pin blocks 'firefox' from o=Ubuntu only, which does not touch
+# either Mozilla build.
+#
+# Whether Mozilla's repo actually carries firefox-esr was not verifiable when
+# this was written. If it does not, the script says so and installs nothing
+# rather than falling back to a channel you did not ask for.
+FIREFOX_CHANNEL="firefox"
+
+# Thunderbird. Ubuntu's thunderbird deb is 2:1snap1 with Pre-Depends: snapd -
+# another snap installer - so it is pinned out and Flathub is the way in.
+#
+# flatpak = install org.mozilla.Thunderbird from Flathub at the end of this
+#           phase. Pulls the freedesktop runtime too, so budget a few hundred
+#           MB and some time.
+# no      = skip it; install it yourself after first boot.
+#
+# Read the profile-path note this prints at the end before running Phase 9.
+INSTALL_THUNDERBIRD="flatpak"
 # ============================================================================
 
 [ "$(id -u)" -eq 0 ] || { echo "FATAL: must run as root inside the chroot" >&2; exit 1; }
@@ -92,7 +120,7 @@ apt_install --no-install-recommends \
 # ------------------------------------------------------------------ Firefox
 # Ubuntu's own 'firefox' package in 26.04 is version 1:1snap1 whose entire job
 # is installing the Firefox snap. Mozilla's APT repo ships the genuine .deb.
-echo "==> Native Firefox from Mozilla's APT repository"
+echo "==> Native Firefox from Mozilla's APT repository ($FIREFOX_CHANNEL)"
 install -d -m 0755 /etc/apt/keyrings
 if curl -fsSL https://packages.mozilla.org/apt/repo-signing-key.gpg \
         -o /etc/apt/keyrings/packages.mozilla.org.asc; then
@@ -123,26 +151,34 @@ EOF
   # firefox carries `Pre-Depends: snapd (>= 2.54)` - a Pre-Depends, stronger
   # than a normal dependency - so installing the wrong candidate is not a
   # cosmetic mistake. Any version string containing "snap" is the shim.
-  FF_CAND="$(apt-cache policy firefox | awk '/Candidate:/{print $2}')"
-  echo "    firefox candidate: $FF_CAND"
+  FF_CAND="$(apt-cache policy "$FIREFOX_CHANNEL" | awk '/Candidate:/{print $2}')"
+  echo "    $FIREFOX_CHANNEL candidate: $FF_CAND"
 
   case "$FF_CAND" in
     ""|"(none)")
-      echo "    !! No firefox candidate at all; skipping."
-      echo "    !! Fix the Mozilla repo, then: sudo apt install firefox"
+      # Deliberately no fallback to the other channel: silently installing a
+      # release cadence nobody asked for is worse than installing nothing.
+      echo "    !! No $FIREFOX_CHANNEL candidate at all; skipping."
+      if [ "$FIREFOX_CHANNEL" = "firefox-esr" ]; then
+        echo "    !! Mozilla's repo may not carry firefox-esr. Check with:"
+        echo "    !!     apt policy firefox-esr firefox"
+        echo "    !! and install whichever channel you want by hand."
+      else
+        echo "    !! Fix the Mozilla repo, then: sudo apt install $FIREFOX_CHANNEL"
+      fi
       ;;
     *snap*)
       echo "    !! The candidate is Ubuntu's snap shim ($FF_CAND), not Mozilla's build."
       echo "    !! The pin in /etc/apt/preferences.d/mozilla.pref is not taking effect."
-      echo "    !! REFUSING to install firefox. Check the repo, then re-run this phase."
+      echo "    !! REFUSING to install $FIREFOX_CHANNEL. Check the repo, then re-run this phase."
       ;;
     *)
-      apt_install "" firefox
-      FF_INST="$(dpkg-query -W -f='${Version}' firefox 2>/dev/null || echo none)"
+      apt_install "" "$FIREFOX_CHANNEL"
+      FF_INST="$(dpkg-query -W -f='${Version}' "$FIREFOX_CHANNEL" 2>/dev/null || echo none)"
       case "$FF_INST" in
-        *snap*) echo "    !!!! Installed firefox is the snap shim ($FF_INST) - purge it." ;;
-        none)   echo "    !! firefox did not install." ;;
-        *)      echo "    firefox installed: $FF_INST  OK" ;;
+        *snap*) echo "    !!!! Installed $FIREFOX_CHANNEL is the snap shim ($FF_INST) - purge it." ;;
+        none)   echo "    !! $FIREFOX_CHANNEL did not install." ;;
+        *)      echo "    $FIREFOX_CHANNEL installed: $FF_INST  OK" ;;
       esac
       ;;
   esac
@@ -189,6 +225,47 @@ else
   echo "    snapd: not installed  OK"
 fi
 [ -d /snap ] && echo "    !! /snap directory exists" || echo "    /snap: absent  OK"
+
+# --------------------------------------------------------------- Thunderbird
+# Ubuntu's thunderbird deb is 2:1snap1-0ubuntu5 with Pre-Depends: snapd - the
+# same snap-installer pattern as firefox - so Phase 5 pins it out and Flathub
+# is the way in.
+#
+# Runs last on purpose: it is the longest network step in this phase and the
+# likeliest to fail on a flaky link. Everything above is already done by the
+# time it starts, and a failure here costs one command after first boot.
+if [ "$INSTALL_THUNDERBIRD" = "flatpak" ]; then
+  echo
+  echo "==> Thunderbird (Flathub)"
+  if ! command -v flatpak >/dev/null 2>&1; then
+    echo "    !! flatpak is not installed; skipping"
+  elif ! flatpak remote-list 2>/dev/null | grep -q flathub; then
+    echo "    !! the flathub remote is missing; skipping"
+    echo "    !! After first boot: flatpak install flathub org.mozilla.Thunderbird"
+  elif flatpak install -y --noninteractive flathub org.mozilla.Thunderbird; then
+    echo "    org.mozilla.Thunderbird installed  OK"
+  else
+    echo "    !! Thunderbird did not install (network, or flatpak inside a chroot)."
+    echo "    !! After first boot: flatpak install flathub org.mozilla.Thunderbird"
+  fi
+
+  # The part that fails silently if nobody says it. Phase 9 restores the old
+  # profile to ~/.thunderbird, which is where a .deb Thunderbird looks. The
+  # Flatpak looks somewhere else and would start with an empty account list -
+  # looking exactly like the restore did not work.
+  cat <<'NOTE'
+
+    PROFILE PATH - read this before running Phase 9:
+        deb build      ~/.thunderbird
+        Flatpak build  ~/.var/app/org.mozilla.Thunderbird/.thunderbird
+
+    Phase 9 restores the old profile to ~/.thunderbird. For the Flatpak,
+    move it after restoring:
+
+        mkdir -p ~/.var/app/org.mozilla.Thunderbird
+        mv ~/.thunderbird ~/.var/app/org.mozilla.Thunderbird/.thunderbird
+NOTE
+fi
 
 echo
 echo "==> Phase 7 complete. Next: bash /root/install/phase8-bootloader.sh"

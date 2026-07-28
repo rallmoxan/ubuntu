@@ -306,8 +306,29 @@ firefox kabuğuydu — o da pin'lenip script tarafından açıkça reddediliyor.
 `"pure"` modun gerçek getirisi `gir1.2-snapd-2`'den kurtulmak; bedeli Ubuntu
 Dock ve masaüstü simgelerinin gitmesi.
 
-Firefox Mozilla'nın kendi APT deposundan kurulur ve `Pin-Priority: 1000` ile
-sabitlenir. Ubuntu'nun `firefox` paketini **asla kurma**.
+### Dosyanın başındaki üç değişken
+
+```bash
+head -60 /root/install/phase7-desktop.sh
+```
+
+| Değişken | Varsayılan | Diğer seçenek |
+|---|---|---|
+| `DESKTOP_MODE` | `"ubuntu"` — tam Ubuntu masaüstü, dock dahil | `"pure"` — bileşenlerden GNOME, dock yok |
+| `FIREFOX_CHANNEL` | `"firefox"` — rapid release, ~4 haftada bir major sürüm | `"firefox-esr"` — yılda bir major, arada güvenlik yaması |
+| `INSTALL_THUNDERBIRD` | `"flatpak"` — Flathub'dan kurar | `"no"` — atla |
+
+**Firefox kanalı.** İkisi de Mozilla'nın APT deposundan gelir; Ubuntu arşivinde
+ikisi de yok (`firefox` orada snap kurucusu, `firefox-esr` hiç yok). Kararlılık
+öncelikliyse `firefox-esr` bu kurulumun geri kalanıyla daha tutarlı.
+
+> Mozilla deposunun `firefox-esr` paketi taşıyıp taşımadığı bu script
+> yazılırken doğrulanamadı. Taşımıyorsa script **hiçbir şey kurmaz** ve bunu
+> söyler — istemediğin bir sürüm kadansına sessizce düşmez. O durumda
+> `apt policy firefox-esr firefox` ile bakıp elle seçersin.
+
+Firefox `Pin-Priority: 1000` ile `packages.mozilla.org` kaynağına sabitlenir.
+Ubuntu'nun `firefox` paketini **asla kurma**.
 
 Ağ takılır da script Firefox'u atlarsa (çıktıda söyler), ilk açılıştan sonra
 depo zaten hazır olduğu için tek komut yeter:
@@ -318,6 +339,25 @@ sudo apt update && sudo apt install -y firefox && apt policy firefox
 
 Çıktıda kaynağın `packages.mozilla.org` olduğunu ve sürümün `1:1snap1`
 **olmadığını** gör.
+
+**Thunderbird** fazın en sonunda Flathub'dan kurulur (`org.mozilla.Thunderbird`).
+Ubuntu'nun `thunderbird` deb'i de `2:1snap1`, yani snap kurucusu — pin onu
+engelliyor. En sona konması bilinçli: bu fazın en uzun ağ adımı, koptuğunda
+üstündeki her şey çoktan bitmiş oluyor ve maliyeti ilk açılıştan sonra tek
+komut.
+
+> **Profil yolu — Faz 9'dan önce oku.** Faz 9 eski profili `~/.thunderbird`
+> altına geri getiriyor; deb sürümü oraya bakar, **Flatpak sürümü bakmaz**.
+> Flatpak'te profil `~/.var/app/org.mozilla.Thunderbird/.thunderbird`. Geri
+> yükledikten sonra taşı:
+>
+> ```bash
+> mkdir -p ~/.var/app/org.mozilla.Thunderbird
+> mv ~/.thunderbird ~/.var/app/org.mozilla.Thunderbird/.thunderbird
+> ```
+>
+> Bunu atlarsan Thunderbird boş hesap listesiyle açılır ve geri yükleme
+> çalışmamış gibi görünür. Script bu notu kendi çıktısında da basıyor.
 
 ---
 
@@ -701,7 +741,8 @@ olduğunu doğrula.
 `thunderbird` paketi `2:1snap1-0ubuntu5`, `Pre-Depends: snapd` taşıyan bir snap
 kurucusu. `nosnap.pref` onu `o=Ubuntu` ile engelliyor.
 
-Gerçek Thunderbird için iki yol — Flatpak Faz 7'de zaten kurulu:
+Faz 7 `INSTALL_THUNDERBIRD="flatpak"` ile onu zaten kurmuş olmalı. Kurmadıysa
+(ağ koptuysa çıktıda söyler):
 
 ```bash
 flatpak install flathub org.mozilla.Thunderbird
@@ -869,8 +910,8 @@ gsettings set org.gnome.mutter experimental-features "['variable-refresh-rate', 
 
 | İhtiyaç | Yol |
 |---|---|
-| Firefox | Zaten kurulu, Mozilla APT deposundan. `apt policy firefox` ile kaynağı doğrula |
-| Thunderbird | Flathub `org.mozilla.Thunderbird` ya da Mozilla deposu — 13. bölüme bak |
+| Firefox | Zaten kurulu, Mozilla APT deposundan (`FIREFOX_CHANNEL`). `apt policy firefox` ile kaynağı doğrula |
+| Thunderbird | Faz 7'de Flathub'dan kurulu. **Profil yolu** için 8. bölümdeki nota bak |
 | Chromium | Flathub `org.chromium.Chromium` |
 | Steam / oyun | Flathub `com.valvesoftware.Steam` |
 | GNOME eklentileri | **Extension Manager** (kurulu). Tarayıcıdan kurmak istersen `sudo apt install gnome-browser-connector` |

@@ -55,19 +55,21 @@ FIREFOX_CHANNEL="firefox-esr"
 # Read the profile-path note this prints at the end before running Phase 9.
 INSTALL_THUNDERBIRD="flatpak"
 
-# Which Flathub ref. Append a branch with '//' to pin a channel, e.g.
-# org.mozilla.Thunderbird//esr - IF such a branch exists.
+# Which Flathub ref.
 #
-# It could not be checked from here: Flathub was unreachable too. What is
-# known is that Thunderbird's own releases have been ESR-based for most of the
-# project's history, so the default branch may already BE the ESR line and a
-# separate ref may not exist at all.
+#   org.mozilla.thunderbird_esr  = the ESR line. Reported present on Flathub
+#                                  by someone who could actually reach it.
+#   org.mozilla.Thunderbird      = the regular app id.
 #
-# Rather than encode a guess, the script lists every Thunderbird ref Flathub
-# actually publishes right before it installs. Read that list on the machine
-# doing the install - it can reach Flathub, this one could not - and set this
-# to whichever ref you want.
-THUNDERBIRD_REF="org.mozilla.Thunderbird"
+# Note the different app IDs, not branches of one ID - which matters, because
+# the Flatpak profile directory is named after the ID. The profile note at the
+# end of this phase is derived from whatever is set here, so it stays correct
+# if you change it.
+#
+# The script lists every Thunderbird ref Flathub actually publishes right
+# before installing, and prints `flatpak info` for what landed. Trust that
+# output over this comment: the machine running the install can reach Flathub.
+THUNDERBIRD_REF="org.mozilla.thunderbird_esr"
 # ============================================================================
 
 [ "$(id -u)" -eq 0 ] || { echo "FATAL: must run as root inside the chroot" >&2; exit 1; }
@@ -211,6 +213,45 @@ else
   echo "    !! flatpak is not installed; skipping"
 fi
 
+# ------------------------------------------------- snapd GNOME Shell extensions
+# gnome-shell-ubuntu-extensions ships two extensions that exist purely to talk
+# to snapd, and Ubuntu enables them by default:
+#
+#   snapd-prompting@canonical.com        "SNAPD Permission Prompting"
+#   snapd-search-provider@canonical.com  "Snapd Search Provider"
+#
+# They are JavaScript, not snaps, and with no snapd running they do nothing -
+# the search provider finds no snaps, the prompter has no daemon to prompt for.
+# But they load into gnome-shell on every login and they show up in Extension
+# Manager, which on a machine built specifically to have no snap is at best
+# confusing. Turning them off costs nothing.
+#
+# The package cannot simply be removed: ubuntu-desktop-minimal hard-depends on
+# it, and it is also what provides Ubuntu Dock, DING, AppIndicators and the
+# Tiling Assistant.
+#
+# disabled-extensions is subtracted from enabled-extensions by gnome-shell, so
+# this switches them off without touching Ubuntu's own enabled list. Written as
+# a gschema override with a high number so it wins over 10_ubuntu-settings.
+# It sets the DEFAULT: anyone who later flips the toggle in Extension Manager
+# still gets their way.
+echo "==> Disabling the snapd GNOME Shell extensions"
+cat > /usr/share/glib-2.0/schemas/99-nosnap-extensions.gschema.override <<'EOF'
+[org.gnome.shell]
+disabled-extensions=['snapd-prompting@canonical.com', 'snapd-search-provider@canonical.com']
+
+[org.gnome.shell:ubuntu]
+disabled-extensions=['snapd-prompting@canonical.com', 'snapd-search-provider@canonical.com']
+EOF
+if glib-compile-schemas /usr/share/glib-2.0/schemas/ 2>/dev/null; then
+  echo "    snapd-prompting + snapd-search-provider disabled by default"
+else
+  echo "    !! glib-compile-schemas failed; the override will apply after the"
+  echo "    !! next package that recompiles schemas. Per-user fallback:"
+  echo "    !!     gnome-extensions disable snapd-prompting@canonical.com"
+  echo "    !!     gnome-extensions disable snapd-search-provider@canonical.com"
+fi
+
 # ----------------------------------------------------------------- services
 echo "==> Enabling desktop services"
 mkdir -p /etc/X11
@@ -282,17 +323,22 @@ if [ "$INSTALL_THUNDERBIRD" = "flatpak" ]; then
   # profile to ~/.thunderbird, which is where a .deb Thunderbird looks. The
   # Flatpak looks somewhere else and would start with an empty account list -
   # looking exactly like the restore did not work.
-  cat <<'NOTE'
+  #
+  # Derived from THUNDERBIRD_REF, because ~/.var/app is keyed on the app ID:
+  # org.mozilla.thunderbird_esr and org.mozilla.Thunderbird do NOT share a
+  # profile. Strip any //branch suffix.
+  TB_APPID="${THUNDERBIRD_REF%%/*}"
+  cat <<NOTE
 
     PROFILE PATH - read this before running Phase 9:
         deb build      ~/.thunderbird
-        Flatpak build  ~/.var/app/org.mozilla.Thunderbird/.thunderbird
+        Flatpak build  ~/.var/app/$TB_APPID/.thunderbird
 
     Phase 9 restores the old profile to ~/.thunderbird. For the Flatpak,
     move it after restoring:
 
-        mkdir -p ~/.var/app/org.mozilla.Thunderbird
-        mv ~/.thunderbird ~/.var/app/org.mozilla.Thunderbird/.thunderbird
+        mkdir -p ~/.var/app/$TB_APPID
+        mv ~/.thunderbird ~/.var/app/$TB_APPID/.thunderbird
 NOTE
 fi
 

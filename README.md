@@ -597,6 +597,24 @@ bash /root/install/phase9-home-to-samsung.sh migrate
 Samsung silinir, `/home` oraya taşınır, `fstab` güncellenir (yedeği
 `/etc/fstab.bak`). Kopyalama sayıları tutmazsa fstab'a dokunmaz.
 
+> **Araç kontrolü.** `migrate` ilk iş olarak ihtiyaç duyduğu bütün komutları
+> kontrol eder ve eksik varsa **hiçbir şeye dokunmadan** durur, kurulacak
+> paketleri de yazar:
+>
+> ```
+> FATAL: missing command(s): sgdisk
+>        Nothing has been touched. Install and re-run:
+>            sudo apt install gdisk
+> ```
+>
+> Bu kontrol sonradan eklendi ve sebebi şu: silme sırası `wipefs -a` sonra
+> `sgdisk`. `sgdisk` yoksa script ERASE yazdıktan **sonra**, bölüm tablosu
+> imzaları çoktan silinmişken patlıyordu. Artık ERASE sorulmadan önce
+> duruyor.
+>
+> `gdisk` Faz 4'te kuruluyor; bu satırdan önce kurulmuş bir sistemde yoksa
+> `sudo apt install gdisk` yeterli.
+
 ```bash
 sudo reboot
 ```

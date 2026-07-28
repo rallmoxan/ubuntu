@@ -182,7 +182,7 @@ apt_install --no-install-recommends ubuntu-minimal ubuntu-standard
 apt_install --no-install-recommends \
   locales tzdata console-setup keyboard-configuration \
   ca-certificates curl wget gpg \
-  btrfs-progs dosfstools zstd \
+  btrfs-progs dosfstools gdisk zstd \
   nano vim less bash-completion \
   software-properties-common apt-transport-https \
   systemd-resolved

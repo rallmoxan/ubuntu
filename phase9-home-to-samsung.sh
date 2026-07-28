@@ -65,6 +65,35 @@ EOF
 
 # ===========================================================================
 migrate)
+  # Preflight BEFORE anything destructive, and this matters more than a
+  # missing-command check usually does: the wipe below runs `wipefs -a` and
+  # only then sgdisk. A missing sgdisk therefore used to abort with the
+  # partition table signatures ALREADY gone - after the operator had typed
+  # ERASE. Check the whole toolchain up front instead of discovering it
+  # halfway through.
+  #
+  # gdisk is installed by Phase 4 on systems built after this was written.
+  # An older build will not have it, which is exactly how this was found.
+  MISSING=""
+  MISSING_PKGS=""
+  for pair in "sgdisk:gdisk" "wipefs:util-linux" "partprobe:parted" \
+              "udevadm:udev" "mkfs.btrfs:btrfs-progs" "btrfs:btrfs-progs" \
+              "rsync:rsync" "fuser:psmisc" "lsblk:util-linux" "findmnt:util-linux"; do
+    tool="${pair%%:*}"; pkg="${pair##*:}"
+    command -v "$tool" >/dev/null 2>&1 && continue
+    MISSING="$MISSING $tool"
+    case " $MISSING_PKGS " in
+      *" $pkg "*) ;;
+      *) MISSING_PKGS="$MISSING_PKGS $pkg" ;;
+    esac
+  done
+  if [ -n "$MISSING" ]; then
+    echo "FATAL: missing command(s):$MISSING" >&2
+    echo "       Nothing has been touched. Install and re-run:" >&2
+    echo "           sudo apt install$MISSING_PKGS" >&2
+    exit 1
+  fi
+
   # Never hold /home busy from our own working directory.
   cd /
 

@@ -389,6 +389,12 @@ grep -qE '^\s*[^#]\S*\s+swap\s' /etc/fstab 2>/dev/null \
 [ -e /usr/sbin/policy-rc.d ] && bad "policy-rc.d still present - services will refuse to start on the real system" \
                              || ok "policy-rc.d removed"
 
+# Phase 9 runs after the reboot and repartitions the Samsung with sgdisk. It
+# checks for itself before touching anything, but finding out here is cheaper
+# than finding out with the old disk still holding the only copy of your data.
+command -v sgdisk >/dev/null 2>&1 && ok "sgdisk present (Phase 9 needs it)" \
+                                  || warn "sgdisk missing - 'apt install gdisk' before Phase 9"
+
 # ---------------------------------------------------------------------------
 printf '\n\033[1m===============================================\033[0m\n'
 printf '  PASS %s   WARN %s   FAIL %s\n' "$PASS" "$WARN" "$FAIL"
